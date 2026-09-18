@@ -150,3 +150,69 @@ Why it worked: The quantity being measured has two independent variance
               random walk with the same step size would fail it. Raising
               z until the failures stopped would have done the opposite
               and hidden the modelling error.
+
+### paired_difference accepted two logs from different runs      2026-09-18 — R1
+
+Symptom:      test_paired_difference_refuses_mismatched_logs fails with
+              "DID NOT RAISE ValueError". Two logs produced from
+              Simulator(seed=55) and Simulator(seed=56) — different
+              transaction streams — are accepted as pairable, and
+              paired_difference happily returns a number computed by
+              pairing unrelated transactions with each other.
+Expected:     The txn_id comparison inside paired_difference should find
+              a mismatch at position 0 and refuse.
+
+Hypotheses:   1) txn_id is not unique across runs. The simulator numbers
+                 transactions `txn-{counter:09d}` with the counter
+                 starting at 0 for every Simulator instance, so BOTH logs
+                 begin at txn-000000000 and the ids match position for
+                 position even though the underlying transactions are
+                 entirely different. The guard is comparing labels that
+                 carry no run identity. (Implementation defect, and a
+                 wider one than this test: an id that is not unique is
+                 also not a usable primary key for the R6 decision table,
+                 and it silently breaks any join between two runs.)
+              2) The mismatch check in paired_difference is faulty — for
+                 example zip() truncating, or the comparison never
+                 executing on the path taken.
+              3) Seeds 55 and 56 genuinely produce identical transactions
+                 — i.e. the seed is not reaching context generation.
+                 Largely ruled out already, since
+                 test_different_seeds_produce_different_streams passes,
+                 but worth confirming rather than assuming.
+
+Test that distinguishes them:
+              Print the first three (txn_id, context) pairs from each of
+              the two logs.
+                - ids identical, contexts different  -> hypothesis 1
+                - ids identical, contexts identical  -> hypothesis 3
+                - ids different (so the check had a real mismatch to
+                  find and missed it) -> hypothesis 2
+
+Actual cause: Hypothesis 1. The diagnostic printed, for seeds 55 and 56:
+                55 [('txn-000000000', 'netbanking', 389224), ...]
+                56 [('txn-000000000', 'netbanking', 722823), ...]
+              Identical ids, different transactions. The guard was
+              comparing labels that carry no run identity, so it had
+              nothing to detect.
+
+Fix:          Two layers.
+              (a) Root cause: the simulator now issues
+                  `txn-{seed}-{counter:09d}`, so an id identifies a
+                  transaction within a run AND identifies the run. Two
+                  logs from the same seed still pair, which is the
+                  behaviour paired comparison depends on.
+              (b) Defence in depth: paired_difference now also compares
+                  the two logs' seeds when both are DecisionLogs, and
+                  fails with a message that names the actual problem
+                  rather than reporting a position mismatch.
+
+Why it worked: The id is now a real identifier rather than a position
+              counter. This was a wider defect than the failing test
+              suggested — a non-unique id is not a usable primary key for
+              R6's decision table either, and any future join between two
+              runs would have matched unrelated rows and returned a
+              plausible wrong answer rather than an error. The test that
+              caught it was only checking that a guard fired; what it
+              actually found was that the thing the guard compares was
+              meaningless.

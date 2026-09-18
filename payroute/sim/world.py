@@ -238,10 +238,14 @@ class Simulator:
         u_list = u_success.tolist()
         z_list = z_latency.tolist()
 
+        # The seed is part of the id, not decoration: without it two different
+        # runs both start at txn-000000000 and any code that joins or pairs
+        # logs by id silently matches unrelated transactions. It is also what
+        # makes the id usable as a primary key for R6's decision table.
         start = self._counter
         self._buffer = [
             Transaction(
-                txn_id=f"txn-{start + i:09d}",
+                txn_id=f"txn-{self.seed}-{start + i:09d}",
                 ts=datetime.fromtimestamp(times_list[i], tz=timezone.utc),
                 method=methods[i],
                 issuer=issuers[i],
