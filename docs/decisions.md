@@ -327,3 +327,30 @@ Why:          Against those two alone, a LinUCB win conflates two
               claims, and an answer to "which part of your model is
               earning its keep?"
 Rung:         R1
+
+### Fee spread currently dominates net revenue — flagged, not yet changed   2026-09-18 — R1
+
+Decision:     Keep the current economics (take rate 200bps; gateway fees
+              atlas 90bps, beacon 110bps, cirrus 70bps + 100 paise flat)
+              for now, and record what they imply.
+Alternatives: Narrow the fee spread so success rate carries more of the
+              objective; widen the success-rate spread instead; make the
+              take rate method-dependent.
+Why:          The R1 table exposed the consequence. Margin per successful
+              transaction is 130bps via cirrus, 110 via atlas and 90 via
+              beacon — a 44% swing — while the success-rate spread
+              between gateways is a few points. So net revenue is
+              currently fee-dominated: `always_cheapest` has the WORST
+              success rate of any baseline and the BEST revenue, and
+              `best_per_segment` wins on success by 3.6 points while
+              losing 67,588 paise per 1,000 transactions.
+              This is good for demonstrating R5's thesis — success rate
+              is not a proxy for revenue — but it is close to the point
+              where "maximise net revenue" collapses into "always pick
+              the cheapest gateway", which would leave R5's constrained
+              selection with little to do beyond a fee lookup. The
+              spreads should be revisited before R5 so that neither
+              objective trivially dominates. Recorded here rather than
+              silently retuned, because changing it after seeing the
+              results would be fitting the world to the conclusion.
+Rung:         R1 (to revisit at R5)

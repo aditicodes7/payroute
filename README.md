@@ -79,7 +79,7 @@ Propensity logging begins at R1 and is enforced by tests from R2 onward.
 | Rung | What it builds | State |
 |------|----------------|-------|
 | **R0** | Gateway simulator: method/issuer mix, diurnal arrivals, background drift, gateway & issuer incidents | ✅ complete — 39 tests |
-| R1 | Round-robin and static-rule baselines | not started |
+| **R1** | Round-robin, uniform-random, and three static-rule baselines | ✅ complete — 53 tests |
 | R2 | LinUCB contextual bandit, propensities logged | not started |
 | R3 | DM / IPS / SNIPS / DR estimators vs ground truth | not started |
 | R4 | Time-decayed per-terminal features; time-to-react | not started |
@@ -127,6 +127,57 @@ table, written last quarter, cannot express.
 Raw binned data: [`results/r0_gateway_outage.csv`](results/r0_gateway_outage.csv),
 [`results/r0_issuer_outage.csv`](results/r0_issuer_outage.csv).
 
+## R1 baselines — the numbers to beat
+
+200,000 transactions, every policy on the identical transaction stream, 95%
+intervals. The incidents scenario adds a sampled schedule of gateway and issuer
+incidents over the same 34 hours.
+
+| policy | success (clean) | success (incidents) | net revenue / 1k txn (incidents) |
+|---|---|---|---|
+| round_robin | 92.05% | 90.20% | 1,843,400 |
+| uniform_random | 92.09% | 90.23% | 1,841,087 |
+| always_cheapest | 91.07% | **89.07%** | **2,110,635** |
+| historically_best | 92.80% | 91.26% | **1,542,134** |
+| best_per_segment | **95.79%** | **93.81%** | 1,775,812 |
+
+Paired against round_robin under incidents — same transactions, so the interval
+on the difference is far tighter than on either mean:
+
+| policy | success delta | net revenue delta / 1k |
+|---|---|---|
+| always_cheapest | −1.13% [−1.22, −1.04] | **+267,235** [+261,442, +273,028] |
+| historically_best | +1.06% [+0.96, +1.15] | −301,266 [−307,216, −295,315] |
+| best_per_segment | **+3.61%** [+3.52, +3.70] | −67,588 [−72,868, −62,307] |
+
+**The highest-success policy is not the highest-revenue policy, and the ranking
+inverts completely.** `best_per_segment` beats round-robin by 3.6 points of
+success and still *loses* 67,588 paise per 1,000 transactions, because it routes
+toward reliable gateways that charge more. `always_cheapest` has the worst
+success rate of any baseline and earns the most. Optimising success rate alone
+is not a proxy for optimising revenue here — it is actively opposed to it, which
+is the argument R5 exists to make.
+
+Raw table: [`results/r1_baselines.csv`](results/r1_baselines.csv).
+
+### None of these baselines react
+
+Share of traffic routed into a gateway while it is degraded:
+
+| policy | share to atlas |
+|---|---|
+| round_robin | 33.3% |
+| uniform_random | 33.3% |
+| always_cheapest | 41.9% |
+| historically_best | 0.0% |
+| best_per_segment | 41.4% |
+
+Round-robin's share during an outage is within 0.3 points of its share before
+one — it has no mechanism capable of noticing. `historically_best` shows 0%
+only because it happens to have picked a different gateway permanently, not
+because it avoided anything. That inability to react is the gap every later
+rung is built to close.
+
 ---
 
 ## Running it
@@ -135,8 +186,9 @@ Raw binned data: [`results/r0_gateway_outage.csv`](results/r0_gateway_outage.csv
 python3 -m venv .venv
 ./.venv/bin/pip install -e . pytest matplotlib
 
-./.venv/bin/python -m pytest -q                        # 39 tests
-./.venv/bin/python experiments/r0_simulator_profile.py # regenerates results/
+./.venv/bin/python -m pytest -q                        # 92 tests
+./.venv/bin/python experiments/r0_simulator_profile.py # simulator charts
+./.venv/bin/python experiments/r1_baselines.py         # baseline table
 ```
 
 ## Layout
