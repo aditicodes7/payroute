@@ -189,3 +189,38 @@ Why:          A binomial band is the wrong DISTRIBUTION here, not merely a
               a question about distinguishing a real shift from
               autocorrelated noise, so the habit is worth fixing here.
 Rung:         R0
+
+### One world definition, shared by tests and experiments   2026-09-18 — R0
+
+Decision:     The canonical SimulatorConfig lives in
+              `config/default_world.py`. `tests/conftest.py` imports it;
+              the experiment scripts import it. Neither defines its own.
+Alternatives: A test world in conftest and a separate experiment world in
+              config/ — which is what existed for the first hour of R0.
+Why:          Two copies drift. Once they have, the test suite is
+              asserting properties of a world the experiments never run,
+              and the acceptance criteria stop covering the artifact. The
+              properties the tests enforce — no dominant gateway, and
+              cheapest/fastest/most-reliable being three different
+              gateways — are exactly the properties the experiment
+              depends on for its result to mean anything, so they have to
+              be asserted about the same object.
+Rung:         R0
+
+### R0 figures use shared y-axes and a validated palette   2026-09-18 — R0
+
+Decision:     Both panels of each R0 figure share one y-axis (25-100%),
+              series colours come from a palette validated for
+              colour-vision deficiency (worst all-pairs CVD dE 9.2,
+              normal-vision dE 24.0), every line is directly labelled in
+              addition to the legend, and each figure ships a CSV of the
+              binned data beside it.
+Alternatives: Per-panel autoscaling; colour-only series identity.
+Why:          Autoscaled panels would rescale the clean run to fill its
+              axis and make a 1-point wobble look like the 48-point
+              outage below it — the comparison the figure exists to make
+              would be destroyed by its own formatting. Direct labels and
+              the CSV are required relief: the third series colour sits
+              below 3:1 contrast on the light surface, so identity must
+              not rest on colour alone.
+Rung:         R0
