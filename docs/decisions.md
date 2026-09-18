@@ -166,3 +166,26 @@ Why:          If one gateway dominated every segment, R2 could not beat
               to demonstrate. These are properties of the experiment's
               validity, so they are asserted as tests.
 Rung:         R0
+
+### Statistical bands account for autocorrelated variance   2026-09-18 — R0
+
+Decision:     Where a measured rate carries background drift as well as
+              sampling noise, the acceptance band is built from
+              `binomial_var + drift_var`, with
+              `drift_var = sigma^2 * 2*tau/T` for an AR(1) of stationary
+              variance sigma^2 and correlation time tau over span T.
+              Bands are never widened by raising z until a test stops
+              failing.
+Alternatives: (a) A binomial band with an inflated z (the original test
+              used z=12). (b) Dropping the assertion and eyeballing a
+              chart.
+Why:          A binomial band is the wrong DISTRIBUTION here, not merely a
+              too-narrow one, so no choice of z makes it correct — it just
+              makes it insensitive. The principled band came out TIGHTER
+              in absolute terms (+/-0.018 vs +/-0.029) while cutting the
+              worst observed deviation from 9.6 sigma to 1.4 sigma across
+              eight seeds: less flaky AND more sensitive. This recurs at
+              R4, where "has the policy reacted to the outage?" is exactly
+              a question about distinguishing a real shift from
+              autocorrelated noise, so the habit is worth fixing here.
+Rung:         R0

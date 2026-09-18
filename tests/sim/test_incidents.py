@@ -20,6 +20,7 @@ from datetime import timedelta
 import pytest
 
 from tests.conftest import (
+    BUSY_HOUR_OFFSET,
     START,
     assert_outside_band,
     assert_within_band,
@@ -56,7 +57,7 @@ def _rates_by_phase(cfg, sim, n, start, end, gateway_names, issuer=None):
 def test_gateway_incident_visibly_drops_the_target_success_rate(clean_world):
     from payroute.sim.incidents import GatewayIncident
 
-    start = START + timedelta(hours=2)
+    start = START + BUSY_HOUR_OFFSET
     end = start + timedelta(minutes=40)
 
     sim = _sim(clean_world)
@@ -79,7 +80,7 @@ def test_gateway_incident_leaves_other_gateways_untouched(clean_world):
     """
     from payroute.sim.incidents import GatewayIncident
 
-    start = START + timedelta(hours=2)
+    start = START + BUSY_HOUR_OFFSET
     end = start + timedelta(minutes=40)
 
     sim = _sim(clean_world)
@@ -101,7 +102,7 @@ def test_gateway_success_rate_recovers_after_the_window(clean_world):
     never comes back."""
     from payroute.sim.incidents import GatewayIncident
 
-    start = START + timedelta(hours=2)
+    start = START + BUSY_HOUR_OFFSET
     end = start + timedelta(minutes=40)
     # skip the recovery ramp itself; we are testing the steady state afterwards
     settled = end + timedelta(minutes=15)
@@ -180,7 +181,7 @@ def test_randomly_sampled_incidents_vary_in_duration_and_severity(clean_world):
 def test_issuer_incident_degrades_every_gateway_for_that_issuer(clean_world):
     from payroute.sim.incidents import IssuerIncident
 
-    start = START + timedelta(hours=2)
+    start = START + BUSY_HOUR_OFFSET
     end = start + timedelta(minutes=45)
 
     sim = _sim(clean_world, seed=17)
@@ -206,7 +207,7 @@ def test_issuer_incident_degradation_is_ordered_by_gateway_sensitivity(clean_wor
     exactly the decision a static rule cannot make."""
     from payroute.sim.incidents import IssuerIncident
 
-    start = START + timedelta(hours=2)
+    start = START + BUSY_HOUR_OFFSET
     end = start + timedelta(minutes=45)
 
     sim = _sim(clean_world, seed=17)
@@ -234,7 +235,7 @@ def test_issuer_incident_degradation_is_ordered_by_gateway_sensitivity(clean_wor
 def test_issuer_incident_leaves_other_issuers_untouched(clean_world):
     from payroute.sim.incidents import IssuerIncident
 
-    start = START + timedelta(hours=2)
+    start = START + BUSY_HOUR_OFFSET
     end = start + timedelta(minutes=45)
 
     sim = _sim(clean_world, seed=17)

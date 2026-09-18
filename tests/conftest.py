@@ -17,7 +17,7 @@ Two ideas carry most of the weight here:
 from __future__ import annotations
 
 import math
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -27,6 +27,14 @@ import pytest
 Z = 4.0
 
 START = datetime(2026, 3, 2, 0, 0, 0, tzinfo=timezone.utc)  # a Monday, midnight UTC
+
+# Where incident windows are placed, and why it is not arbitrary: arrivals are
+# diurnal, peaking at 15:00 UTC. At the 03:00 trough the rate is ~30 txn/min
+# against ~209 txn/min at the peak — a 7x swing. A 45-minute window in the
+# trough does not contain enough transactions to measure a success-rate change
+# at all, which is what made three of these tests fail on their sample-size
+# guards rather than on their assertions. See docs/bugs.md.
+BUSY_HOUR_OFFSET = timedelta(hours=13)
 
 
 def binomial_band(p: float, n: int, z: float = Z) -> tuple[float, float]:
@@ -41,6 +49,25 @@ def assert_within_band(observed: float, p: float, n: int, z: float = Z, label: s
         f"{label}: observed rate {observed:.4f} outside {z}-sigma band "
         f"[{lo:.4f}, {hi:.4f}] for p={p:.4f}, n={n}"
     )
+
+
+def drift_adjusted_band(observed_p: float, n: int, cfg, span_seconds: float, z: float = Z):
+    """Band for a success rate measured over a run with background drift.
+
+    A binomial band is the wrong yardstick here at ANY z: the observed rate
+    carries two independent sources of variance, sampling noise AND the
+    time-average of the AR(1) drift process. For an AR(1) with stationary
+    variance sigma^2 and correlation time tau, the variance of its average over
+    a span T >> tau is approximately sigma^2 * 2*tau/T.
+
+    Widening z until the test stops failing would have hidden the fact that we
+    were comparing against the wrong distribution.
+    """
+    tau_seconds = cfg.drift.reversion_half_life_minutes * 60.0 / math.log(2.0)
+    binomial_var = observed_p * (1.0 - observed_p) / n
+    drift_var = (cfg.drift.sigma ** 2) * (2.0 * tau_seconds / span_seconds) if cfg.drift.enabled else 0.0
+    se = math.sqrt(binomial_var + drift_var)
+    return (observed_p - z * se, observed_p + z * se)
 
 
 def assert_outside_band(observed: float, p: float, n: int, z: float = Z, label: str = ""):

@@ -13,7 +13,7 @@ from datetime import timedelta
 
 import pytest
 
-from tests.conftest import assert_within_band, marginal_true_prob
+from tests.conftest import drift_adjusted_band, marginal_true_prob
 
 
 def _sim(cfg, seed=7):
@@ -70,13 +70,21 @@ def test_drift_is_mean_reverting_not_a_random_walk(world):
     to 0 or 1 and quietly invalidate every long run."""
     sim = _sim(world, seed=44)
     ok = total = 0
+    first = last = None
     for txn in sim.transactions(150_000):
+        first = first or txn.ts
+        last = txn.ts
         ok += int(sim.resolve(txn, "atlas").success)
         total += 1
 
-    # long-run mean should sit close to the configured baseline; the band is
-    # widened because drift legitimately adds variance on top of binomial
-    assert_within_band(ok / total, marginal_true_prob(world, "atlas"), total, z=12.0, label="atlas long run")
+    p = marginal_true_prob(world, "atlas")
+    span = (last - first).total_seconds()
+    lo, hi = drift_adjusted_band(p, total, world, span)
+    observed = ok / total
+    assert lo <= observed <= hi, (
+        f"atlas long-run rate {observed:.4f} outside drift-adjusted band "
+        f"[{lo:.4f}, {hi:.4f}] — the drift process is not mean-reverting"
+    )
 
 
 def test_drift_is_independent_across_gateways(world):
