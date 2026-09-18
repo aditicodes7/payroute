@@ -354,3 +354,108 @@ Why:          The R1 table exposed the consequence. Margin per successful
               silently retuned, because changing it after seeing the
               results would be fitting the world to the conclusion.
 Rung:         R1 (to revisit at R5)
+
+### R2 optimises success probability, not net revenue directly   2026-09-18 — R2
+
+Decision:     LinUCB's reward is success (0/1). Net revenue is reported
+              as a consequence, not regressed on. At R5 the objective
+              becomes `p_hat(x,a) * value(x) - fee(x,a)`, computed
+              analytically from the learned probability.
+Alternatives: Reward = net revenue in paise, so the bandit optimises the
+              headline number directly.
+Why:          UCB's confidence bounds assume a bounded reward with
+              well-behaved noise. Net revenue is heavy-tailed — the
+              amount distribution has a p99/p50 ratio above 8 — so the
+              noise term would be dominated by amount variance that says
+              nothing about gateway quality, the confidence widths would
+              be wrong, and the exploration budget would be spent chasing
+              large transactions rather than learning about gateways.
+              Success is bounded in [0,1] and learnable; value and fee
+              are known exactly from the amount and the fee schedule.
+              There is no reason to learn what can be computed.
+Rung:         R2 (sets up R5)
+
+### Epsilon-greedy wrapper on LinUCB; Thompson sampling rejected   2026-09-18 — R2
+
+Decision:     LinUCB takes an `epsilon` parameter. With probability
+              1-epsilon it plays the UCB argmax, otherwise it picks
+              uniformly. Propensity is exactly
+              (1-eps) + eps/K for the greedy arm and eps/K otherwise.
+              Epsilon is swept across runs to feed R3's determinism axis,
+              INCLUDING epsilon = 0.
+Alternatives: (a) Softmax over UCB scores — informed exploration and an
+              exact propensity, but the scores are on an arbitrary scale
+              so the temperature needs per-problem tuning. Still
+              available as a second axis at R3 if wanted.
+              (b) Thompson sampling — naturally stochastic, often better
+              regret.
+Why:          Textbook LinUCB is deterministic, so its honest propensity
+              is 1.0 and its log can evaluate nothing. Epsilon-greedy
+              fixes that with an exactly computable propensity and a
+              single knob that maps directly onto R3's x-axis.
+              Thompson sampling was rejected specifically because its
+              propensity has NO CLOSED FORM — it would have to be
+              estimated by repeated sampling, and an approximate
+              propensity sitting in a denominator is a bias nothing
+              downstream can detect. In a project whose premise is that
+              propensities must be exact and logged, that is
+              disqualifying.
+              Keeping epsilon = 0 in the sweep is deliberate: it is the
+              best-performing policy and the one whose log is provably
+              unusable, which is the tradeoff R3 exists to price. We are
+              paying revenue for the ability to measure.
+Rung:         R2
+
+### R2 uses static context only — no gateway health features   2026-09-18 — R2
+
+Decision:     The R2 feature vector is method, issuer, merchant category,
+              standardised log amount, cyclic hour-of-day, and a bias
+              term (d = 16). No gateway health signal of any kind.
+Alternatives: Including a rolling success-rate feature now, since it
+              would obviously help.
+Why:          Two reasons. First, R4's entire measurement is the delta
+              from adding time-decayed health features; if R2 already had
+              one, that delta would be a confound rather than a result.
+              Second, a health feature computed from a window that
+              includes the transaction being decided is exactly the leak
+              this rung is expected to produce — it looks innocent, it is
+              one off-by-one in a window boundary, and it yields a model
+              that appears to predict failures brilliantly because it is
+              reading them. Keeping health out of R2 means that when it
+              arrives at R4 it gets built once, deliberately, with the
+              boundary as the main design question.
+Rung:         R2
+
+### The featuriser's only input is the logged context dict   2026-09-18 — R2
+
+Decision:     `Featuriser.transform()` accepts a plain mapping and
+              nothing else — never a Transaction, never the Simulator. A
+              test asserts, using a key-recording dict, that it reads only
+              keys `context_of()` provides.
+Alternatives: Passing the Transaction and letting the featuriser pick
+              fields off it.
+Why:          Handing it the Transaction would put the whole simulator one
+              attribute access away, and the oracle two. With a plain
+              mapping, leaking requires adding a field to `context_of()`
+              — one visible, reviewable line instead of an accident. The
+              guard is checked as a fact about which keys the code
+              touched, not as a promise about which keys it intends to
+              touch.
+Rung:         R2
+
+### Sherman-Morrison inverse, with a drift check   2026-09-18 — R2
+
+Decision:     Maintain A^-1 incrementally by rank-one update rather than
+              inverting A on every decision, and assert in a test that
+              the maintained inverse still equals the true inverse after
+              hundreds of updates.
+Alternatives: Inverting the 16x16 matrix per arm per decision.
+Why:          Scoring becomes a matrix-vector product, which matters for
+              R6's 30ms budget and for keeping the test suite runnable.
+              It is also a real numerical-drift risk, so the speedup
+              ships with the check that makes it safe rather than on
+              trust. Cold-start ties are broken randomly for a related
+              reason: at t=0 every arm scores identically, and an argmax
+              that breaks ties by list order hands all early traffic to
+              one gateway and starts the bandit from a skewed sample.
+Rung:         R2

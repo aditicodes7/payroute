@@ -21,10 +21,12 @@ def _sim(cfg, seed=7):
 
 
 def _all_policies(cfg):
+    from payroute.features import Featuriser
     from payroute.policies import (
         AlwaysCheapest,
         BestPerSegment,
         HistoricallyBest,
+        LinUCB,
         RoundRobin,
         UniformRandom,
     )
@@ -37,6 +39,7 @@ def _all_policies(cfg):
         AlwaysCheapest(cfg),
         HistoricallyBest.fit(training),
         BestPerSegment.fit(training),
+        LinUCB(cfg.gateway_names, Featuriser.from_config(cfg), alpha=1.0, epsilon=0.05, seed=11),
     ]
 
 
@@ -54,7 +57,7 @@ def test_every_baseline_is_covered_by_this_file(clean_world):
     assert exported == covered, f"policies not covered by the propensity test: {exported - covered}"
 
 
-@pytest.mark.parametrize("index", range(5))
+@pytest.mark.parametrize("index", range(6))
 def test_every_decision_has_a_propensity(clean_world, index):
     from payroute.policies.runner import run_policy
 
@@ -68,7 +71,7 @@ def test_every_decision_has_a_propensity(clean_world, index):
         assert record.propensity == pytest.approx(record.action_probs[record.action])
 
 
-@pytest.mark.parametrize("index", range(5))
+@pytest.mark.parametrize("index", range(6))
 def test_every_decision_logs_the_full_action_probability_vector(clean_world, index):
     """Not just the chosen action's propensity. Several estimators and most of
     the diagnostics want the logging policy's probability for actions we did
@@ -85,7 +88,7 @@ def test_every_decision_logs_the_full_action_probability_vector(clean_world, ind
         assert sum(record.action_probs.values()) == pytest.approx(1.0)
 
 
-@pytest.mark.parametrize("index", range(5))
+@pytest.mark.parametrize("index", range(6))
 def test_every_decision_carries_context_action_and_reward(clean_world, index):
     """The R6 acceptance criterion, asserted three rungs early: amount, context,
     propensity, chosen action, and the outcome."""
