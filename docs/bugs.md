@@ -1,0 +1,23 @@
+# Bug Log
+
+Every bug gets an entry here **before** it is fixed. The hypotheses are
+written down while they are still genuinely uncertain — that is the point
+of the log. Newest entries appended at the bottom.
+
+## Format
+
+```
+### <short title>            <date> — <rung>
+
+Symptom:      what I actually saw
+Expected:     what I thought would happen
+Hypotheses:   1) ...
+              2) ...
+              3) ...
+Test that distinguishes them: ...
+Actual cause: ...
+Fix:          ...
+Why it worked: ...
+```
+
+---
