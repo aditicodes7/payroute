@@ -224,3 +224,106 @@ Why:          Autoscaled panels would rescale the clean run to fill its
               below 3:1 contrast on the light surface, so identity must
               not rest on colour alone.
 Rung:         R0
+
+### Uniform-random added as a fifth baseline, to be the logging policy   2026-09-18 — R1
+
+Decision:     Round robin logs a propensity of 1.0 (it is deterministic).
+              A separate `uniform_random` policy, which genuinely draws
+              its action from a uniform distribution, is added and is the
+              policy used to generate exploration logs for R3.
+Alternatives: (a) Log 1/K for round robin, on the grounds that it sends
+              1/K of traffic to each gateway. (b) Log 1.0 and accept that
+              R3 has no usable dataset.
+Why:          (a) produces correct-looking OPE arithmetic, but only by
+              coincidence: it works because round robin's assignment
+              happens to be independent of context. Written down as a
+              general rule it is false, and a coincidence that yields the
+              right answer is how you get a wrong answer later when the
+              policy changes slightly. Rather than record a fiction, we
+              built a policy for which 1/K is simply true. Round robin
+              stays as the illustrative baseline because it is what
+              people actually build; uniform random is the logging
+              policy. Two policies, two purposes, nothing invented in the
+              log.
+Rung:         R1
+
+### Deterministic baselines' logs are near-useless for OPE — stated as a result   2026-09-18 — R1
+
+Decision:     Record this explicitly (and assert it in a test) rather
+              than treat it as an implementation detail: a static rule's
+              propensity is genuinely 1.0, so every importance weight
+              against it is 0 or undefined, so its log cannot evaluate
+              any policy that would have chosen differently.
+Alternatives: Treating it as an inconvenience to be worked around.
+Why:          This is the real situation a payments company is in with
+              its production rule table: the data those rules generate
+              cannot answer whether a different policy would be better,
+              because it contains no evidence about the roads not taken.
+              It is the load-bearing argument for why exploration must be
+              deliberate rather than incidental, and R3 quantifies how
+              fast the degradation sets in.
+Rung:         R1
+
+### The full action-probability vector is logged, not just the propensity   2026-09-18 — R1
+
+Decision:     Every decision record carries `action_probs` over all
+              gateways as well as the scalar `propensity` for the chosen
+              action (with a check that the two agree).
+Alternatives: Logging the scalar propensity alone.
+Why:          Several estimator formulations and most of the diagnostics
+              want the logging policy's probability for actions that were
+              NOT taken. At three gateways the storage cost is nil; the
+              cost of discovering the need later is regenerating every
+              experiment in the project. The agreement check exists
+              because two fields that must match will drift apart exactly
+              when someone adds a policy and updates one of them.
+Rung:         R1
+
+### Context is snapshotted into the record, never referenced   2026-09-18 — R1
+
+Decision:     The decision record stores the actual feature values used
+              at decision time, copied and immutable, rather than a
+              reference to anything recomputed later.
+Alternatives: Storing a transaction id and recomputing features when the
+              log is read.
+Why:          At R1 the features are static and this looks like pointless
+              duplication. At R4 they become time-decayed rolling
+              aggregates, and a reference would resolve to different
+              numbers when R3 reads the log than the policy saw when it
+              decided. That is train/serve skew — the same defect flagged
+              for R6 and R7, arriving three rungs early in a disguise.
+              Closing it now costs nothing.
+Rung:         R1
+
+### Fitted baselines carry their training seed; the runner enforces it   2026-09-18 — R1
+
+Decision:     `HistoricallyBest` and `BestPerSegment` record the seed of
+              the run they were fitted on, and `run_policy` raises
+              `LeakageError` when asked to evaluate a fitted policy on
+              that same seed.
+Alternatives: A convention that fitting and evaluation use different
+              seeds, enforced by remembering.
+Why:          Fitting a table on the transactions it is then scored
+              against lets it peek at the noise in its own test set: the
+              baseline looks better than it is, and R2 looks worse by
+              exactly the same amount — a bias that flatters the
+              conclusion we most want to be true. Conventions enforced by
+              memory fail silently; this one fails loudly.
+Rung:         R1
+
+### best_per_segment included, to separate two claims about R2   2026-09-18 — R1
+
+Decision:     Build a frozen `(method, issuer) -> gateway` lookup table
+              fitted from an exploration log, in addition to the simpler
+              baselines.
+Alternatives: Comparing R2 only against round robin and
+              always-historically-best.
+Why:          Against those two alone, a LinUCB win conflates two
+              different claims: that the policy is contextual, and that
+              it adapts over time. best_per_segment already captures the
+              contextual structure but is frozen, so beating it isolates
+              the adaptivity claim; beating round robin on a clean run
+              isolates the contextual one. Two baselines, two separable
+              claims, and an answer to "which part of your model is
+              earning its keep?"
+Rung:         R1
