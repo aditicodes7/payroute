@@ -80,7 +80,7 @@ Propensity logging begins at R1 and is enforced by tests from R2 onward.
 |------|----------------|-------|
 | **R0** | Gateway simulator: method/issuer mix, diurnal arrivals, background drift, gateway & issuer incidents | ✅ complete — 39 tests |
 | **R1** | Round-robin, uniform-random, and three static-rule baselines | ✅ complete — 53 tests |
-| R2 | LinUCB contextual bandit, propensities logged | not started |
+| **R2** | LinUCB contextual bandit, propensities logged | ✅ complete — 40 tests |
 | R3 | DM / IPS / SNIPS / DR estimators vs ground truth | not started |
 | R4 | Time-decayed per-terminal features; time-to-react | not started |
 | R5 | Constrained selection under a p95 latency budget | not started |
@@ -178,6 +178,62 @@ only because it happens to have picked a different gateway permanently, not
 because it avoided anything. That inability to react is the gap every later
 rung is built to close.
 
+## R2 — LinUCB
+
+150,000 transactions with a sampled incident schedule, every policy on the
+identical stream, paired against LinUCB (epsilon = 0.05):
+
+| baseline | success delta | net revenue delta / 1k |
+|---|---|---|
+| round_robin | +2.46% [+2.35, +2.56] | +74,177 |
+| uniform_random | +2.35% [+2.25, +2.45] | +76,266 |
+| always_cheapest | +3.80% [+3.69, +3.91] | −187,324 |
+| historically_best | +0.92% [+0.81, +1.03] | +368,876 |
+| best_per_segment | **−1.35%** [−1.43, −1.28] | +139,483 |
+
+![regret](results/r2_regret.png)
+
+Round-robin's regret is close to linear — it never learns. LinUCB's flattens.
+But look at transaction 75,000: an incident hits, `best_per_segment` absorbs it
+and returns to flat, while **LinUCB's regret accelerates and is still climbing
+at 150k**.
+
+That is the honest headline of this rung: *LinUCB loses to a frozen lookup
+table under incidents.* The cause is that `A` and `b` are unweighted sums over
+all history, so after 75,000 observations a 40-minute outage is a vanishing
+fraction of the evidence. The policy has no way to say "recent data matters
+more" — which is precisely what R4 is for.
+
+### The epsilon sweep — and a result that reverses the obvious story
+
+| epsilon | success | net revenue / 1k | tail regret / txn | min propensity |
+|---|---|---|---|---|
+| 0.00 | 92.02% | 1,574,982 | **0.03680** | 1.0000 |
+| 0.01 | 92.71% | 1,926,913 | 0.01755 | 0.0033 |
+| 0.05 | 92.83% | **1,927,329** | 0.01798 | 0.0167 |
+| 0.10 | 92.48% | 1,911,998 | 0.01841 | 0.0333 |
+| 0.30 | 92.01% | 1,904,288 | 0.02080 | 0.1000 |
+
+On a **stationary** world, epsilon = 0 wins outright: tail regret 0.00050
+against 0.00298 at epsilon = 0.05. Exploration is a pure tax, paid to obtain a
+loggable propensity.
+
+Under **incidents** the ranking inverts. A deterministic LinUCB converges, its
+confidence widths collapse, it stops sampling arms it believes are worse — and
+so it cannot notice when the arm it settled on degrades. It ends up with double
+the tail regret of every stochastic setting and 18% less revenue.
+
+**So exploration buys two different things, and only one of them is a cost.**
+It buys a propensity you can evaluate against, and it buys robustness to a
+world that moves. R3 prices the first. R4 addresses the second properly.
+
+The `min propensity` column is exactly `epsilon / K`, and it is the x-axis of
+R3's headline chart: as it shrinks, importance weights grow and the estimators
+degrade.
+
+Raw data: [`results/r2_epsilon_sweep.csv`](results/r2_epsilon_sweep.csv),
+[`results/r2_regret.csv`](results/r2_regret.csv).
+
 ---
 
 ## Running it
@@ -186,9 +242,10 @@ rung is built to close.
 python3 -m venv .venv
 ./.venv/bin/pip install -e . pytest matplotlib
 
-./.venv/bin/python -m pytest -q                        # 92 tests
+./.venv/bin/python -m pytest -q                        # 132 tests
 ./.venv/bin/python experiments/r0_simulator_profile.py # simulator charts
 ./.venv/bin/python experiments/r1_baselines.py         # baseline table
+./.venv/bin/python experiments/r2_linucb.py            # LinUCB + regret curve
 ```
 
 ## Layout

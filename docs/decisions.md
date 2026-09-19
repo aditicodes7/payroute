@@ -459,3 +459,53 @@ Why:          Scoring becomes a matrix-vector product, which matters for
               that breaks ties by list order hands all early traffic to
               one gateway and starts the bandit from a skewed sample.
 Rung:         R2
+
+### Finding: exploration is insurance, not only a cost   2026-09-19 — R2
+
+Decision:     Record this before R3 and R4 are built, because it
+              reverses the framing we adopted at R2 and changes what R4
+              has to demonstrate.
+Alternatives: Reporting only the clean-world result, where the story is
+              tidy.
+Why:          On the CLEAN world, epsilon = 0 is strictly better: tail
+              regret 0.00050 per transaction against 0.00298 at
+              epsilon = 0.05. Exploration is a pure tax, and the tax is
+              the price of a loggable propensity.
+              Under INCIDENTS the ranking inverts:
+                eps 0.00 -> tail regret 0.03680, net revenue 1,574,982
+                eps 0.01 -> tail regret 0.01755, net revenue 1,926,913
+                eps 0.05 -> tail regret 0.01798, net revenue 1,927,329
+                eps 0.30 -> tail regret 0.02080, net revenue 1,904,288
+              A deterministic LinUCB converges, its confidence widths
+              collapse, it stops sampling the arms it believes are worse,
+              and it therefore cannot notice when the arm it settled on
+              degrades. Exploration is what keeps the estimates alive in
+              a world that moves. So epsilon buys two different things
+              at once — a usable propensity AND robustness to
+              non-stationarity — and only the first is a pure cost.
+Rung:         R2
+
+### Finding: LinUCB has no forgetting, and the regret curve shows it   2026-09-19 — R2
+
+Decision:     Record the mechanism now; R4 is the fix.
+Alternatives: Treating the R2 vs best_per_segment gap as tuning noise.
+Why:          Under incidents LinUCB (eps=0.05) reaches 92.83% success
+              against best_per_segment's 94.18% — it LOSES by 1.35
+              points [-1.43, -1.28] to a frozen lookup table, while
+              beating it on net revenue by 139,483 per 1k. On the clean
+              world the two are within 1 point.
+              The regret curve explains it. Both are flat until the
+              incident around transaction 75,000. best_per_segment takes
+              the hit and returns to flat. LinUCB's regret accelerates
+              from 75k to roughly 110k and is still accumulating at
+              150k — it never recovers within the run.
+              The mechanism is that A_a and b_a are unweighted sums over
+              all history. After 75,000 observations a 40-minute outage
+              is a vanishing fraction of the evidence, so the estimate
+              barely moves during the outage and is then slow to unwind
+              afterwards. The policy has no way to say "recent data
+              matters more". That is exactly what R4's time-decayed
+              features exist to fix, so R4's acceptance number —
+              time-to-react — now has a concrete baseline to beat rather
+              than an abstract one.
+Rung:         R2 (motivates R4)
