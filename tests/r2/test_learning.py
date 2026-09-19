@@ -64,19 +64,49 @@ def test_regret_curve_flattens(clean_world):
     assert late < 0.02, f"average regret settled at {late:.4f}, too high to call it converged"
 
 
-def test_cumulative_regret_is_sublinear(clean_world):
-    """Stronger than 'the chart looks flat': doubling the horizon must less
-    than double the accumulated regret."""
+def test_pure_linucb_regret_is_sublinear(clean_world):
+    """Stronger than 'the chart looks flat': doubling the horizon must add
+    materially less than the first half did.
+
+    This is asserted at epsilon = 0, because that is the policy the
+    O(d sqrt(T log T)) bound actually applies to. See the companion test below.
+    """
     from payroute.policies.runner import run_policy
     from payroute.ope.regret import instantaneous_regret
 
     sim = _sim(clean_world)
-    log = run_policy(sim, _policy(clean_world), 60_000)
+    log = run_policy(sim, _policy(clean_world, epsilon=0.0), 60_000)
     regret = instantaneous_regret(sim, log)
 
     half = sum(regret[: len(regret) // 2])
     full = sum(regret)
-    assert full < 1.6 * half, f"regret grew linearly: {half:.1f} -> {full:.1f}"
+    assert full < 1.4 * half, f"regret grew linearly: {half:.1f} -> {full:.1f}"
+
+
+def test_epsilon_greedy_pays_a_linear_regret_floor(clean_world):
+    """The price of being able to evaluate anything, asserted as a property
+    rather than discovered later.
+
+    A fixed epsilon explores forever, so it pays roughly
+    epsilon * E[gap] on every transaction indefinitely and cumulative regret is
+    linear. LinUCB's sublinear guarantee does not survive the wrapper we added
+    for propensity reasons. That is a real cost, and R3 exists to price what it
+    buys on the other side.
+    """
+    from payroute.policies.runner import run_policy
+    from payroute.ope.regret import instantaneous_regret
+
+    tail = {}
+    for epsilon in (0.0, 0.05):
+        sim = _sim(clean_world)
+        log = run_policy(sim, _policy(clean_world, epsilon=epsilon), 60_000)
+        regret = instantaneous_regret(sim, log)
+        tail[epsilon] = sum(regret[-12_000:]) / 12_000
+
+    assert tail[0.05] > 3 * tail[0.0], (
+        f"expected exploration to cost a visible steady-state floor, got "
+        f"{tail[0.0]:.5f} -> {tail[0.05]:.5f} regret per transaction"
+    )
 
 
 def test_linucb_beats_round_robin_on_success(clean_world):

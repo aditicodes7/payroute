@@ -26,7 +26,14 @@ def context_of(txn: Transaction) -> dict:
     }
 
 
-def run_policy(sim: Simulator, policy, n: int) -> DecisionLog:
+def default_reward(txn: Transaction, outcome) -> float:
+    """R2's reward is success, not net revenue: UCB's confidence bounds assume a
+    bounded reward, and revenue is heavy-tailed. R5 computes expected revenue
+    analytically from the learned probability instead."""
+    return float(outcome.success)
+
+
+def run_policy(sim: Simulator, policy, n: int, reward_fn=default_reward) -> DecisionLog:
     train_seed = getattr(policy, "train_seed", None)
     if train_seed is not None and train_seed == sim.seed:
         raise LeakageError(
@@ -40,11 +47,12 @@ def run_policy(sim: Simulator, policy, n: int) -> DecisionLog:
     for txn in sim.transactions(n):
         decision = policy.decide(txn)
         outcome = sim.resolve(txn, decision.action)
+        context = context_of(txn)
         log.append(
             DecisionRecord(
                 txn_id=txn.txn_id,
                 ts=txn.ts,
-                context=context_of(txn),
+                context=context,
                 action=decision.action,
                 propensity=decision.propensity,
                 action_probs=decision.action_probs,
@@ -53,4 +61,8 @@ def run_policy(sim: Simulator, policy, n: int) -> DecisionLog:
                 outcome=outcome,
             )
         )
+        # Policies that learn get their feedback here. Baselines have no
+        # `update`, which is what makes them baselines.
+        if hasattr(policy, "update"):
+            policy.update(context, decision.action, reward_fn(txn, outcome))
     return log

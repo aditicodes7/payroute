@@ -216,3 +216,259 @@ Why it worked: The id is now a real identifier rather than a position
               caught it was only checking that a guard fired; what it
               actually found was that the thing the guard compares was
               meaningless.
+
+### Confidence width shrank for a context the arm had never seen   2026-09-19 — R2
+
+Symptom:      test_confidence_width_is_directional fails. After 300
+              updates on (upi, hdfc), the width for the never-seen
+              (netbanking, kotak) fell from 2.292 to 1.800 — a 21% drop,
+              where the test allowed at most 20%.
+Expected:     Learning about one segment should leave uncertainty about
+              an unrelated segment essentially untouched.
+Hypotheses:   1) The two contexts are not unrelated. They differ only in
+                 method and issuer; merchant_category, amount, hour and
+                 bias are identical, so several of the 16 feature
+                 directions ARE being learned. Partial generalisation
+                 across shared directions is exactly what LinUCB is for,
+                 so the shrinkage is correct and the test's contexts are
+                 not distinct enough.
+              2) The A_inv update leaks across arms or across directions
+                 — e.g. Sherman-Morrison applied to the wrong matrix.
+                 Partly ruled out already:
+                 test_only_the_chosen_arm_is_updated and
+                 test_maintained_inverse_stays_equal_to_the_true_inverse
+                 both pass.
+              3) The one-hots are not actually distinguishing method and
+                 issuer, making the two contexts nearly identical
+                 vectors. Largely ruled out by the featuriser tests.
+Test that distinguishes them:
+              Print both feature vectors and count how many nonzero
+              directions they share, then repeat the measurement with a
+              second context that differs in method, issuer, category,
+              hour AND amount.
+                - many shared directions, and the width ratio rises
+                  toward 1.0 as the contexts are made more distinct
+                  -> hypothesis 1
+                - ratio unchanged however distinct the contexts
+                  -> hypothesis 2
+
+Actual cause: Hypothesis 1. The two contexts share 5 of 16 nonzero
+              directions: category=food_delivery, log_amount_z, hour_sin,
+              hour_cos and bias. Learning about those is real learning
+              that legitimately applies to both. Making the contexts
+              genuinely distinct (different method, issuer, category,
+              hour and amount) moves the ratio from 0.785 to 0.993 — so
+              the implementation is behaving exactly as the design
+              claims, and the test's "unrelated" contexts were not
+              unrelated. Partial generalisation across shared feature
+              directions is the property that makes LinUCB more
+              data-efficient than a per-segment table; this test was
+              accidentally measuring it and calling it a fault.
+Fix:          The test now uses contexts that differ in method, issuer,
+              category, hour AND amount, and asserts the width stays
+              above 95% of its prior value. A companion test,
+              test_partially_shared_contexts_do_generalise, pins the
+              other half of the behaviour: contexts that share some
+              directions DO get more confident, by a factor between 0.5
+              and 0.9.
+Why it worked: The implementation never needed changing. Splitting the
+              property in two turns an accidental near-miss into two
+              explicit statements — uncertainty is directional, and
+              partial overlap generalises — and the second is the
+              property that makes LinUCB beat a per-segment table, so it
+              is worth a test of its own rather than a footnote.
+
+### theta does not converge to the generating parameters   2026-09-19 — R2
+
+Symptom:      test_theta_recovers_a_known_linear_reward fails. After
+              4,000 noiseless observations generated from a known theta
+              with ridge = 1e-6, the estimate is close on some components
+              and off by up to 0.08 on others (e.g. -0.20 vs -0.14,
+              +0.33 vs +0.27).
+Expected:     With noiseless rewards and negligible regularisation, ridge
+              regression should recover the generating parameters almost
+              exactly.
+Hypotheses:   1) The design matrix is rank-deficient — the classic
+                 dummy-variable trap. The three method one-hots sum to 1,
+                 the five issuer one-hots sum to 1, and the four category
+                 one-hots sum to 1, and there is also an explicit bias
+                 column equal to 1. That is three exact linear
+                 dependencies, so theta is NOT IDENTIFIABLE: infinitely
+                 many parameter vectors give identical predictions, and
+                 ridge picks the minimum-norm one rather than the
+                 generating one. Predictions would still be correct.
+              2) Ridge at 1e-6 is still shrinking theta toward zero
+                 enough to matter. Would show as roughly uniform
+                 shrinkage across all components.
+              3) Insufficient data or poor conditioning — 4,000 samples
+                 for d = 16 would have to be far worse conditioned than
+                 expected for this to be the cause.
+Test that distinguishes them:
+              (a) Compute matrix_rank(A - ridge*I). If it is below 16,
+                  hypothesis 1.
+              (b) Compare PREDICTIONS rather than parameters: draw random
+                  contexts and check x@theta_hat against x@truth. If
+                  predictions agree to high precision while parameters do
+                  not, hypothesis 1 is confirmed and the test is asserting
+                  the wrong quantity.
+              (c) If predictions are also off, compare the ratio
+                  theta_hat/truth componentwise — a roughly constant
+                  ratio below 1 points at hypothesis 2.
+
+Actual cause: Hypothesis 1, confirmed on both checks.
+              matrix_rank(sum x x^T) = 13 of 16 — exactly the three
+              dependencies predicted (method one-hots, issuer one-hots
+              and category one-hots each sum to the bias column).
+              Predictions are essentially exact: max error 4.1e-07 over
+              500 contexts, against a max PARAMETER error of 6.6e-02.
+              ||theta_hat|| = 0.5055 vs ||truth|| = 0.5416, i.e. ridge
+              returned the minimum-norm member of the solution set.
+              The test asserted parameter recovery for a model whose
+              parameters are not identifiable.
+              Worth recording: the rank deficiency is harmless here. The
+              unexcited directions form a subspace no real feature vector
+              ever enters, A is block-diagonal with respect to that
+              split, so the confidence widths are unaffected and only
+              theta's interpretability is lost — which we never rely on.
+Fix:          The test now asserts what is actually identifiable:
+              PREDICTIONS agree to better than 1e-5 over 500 contexts,
+              the design matrix has rank dim - 3, and the fitted theta's
+              norm does not exceed the generating one (the minimum-norm
+              property). It no longer asserts parameter recovery.
+Why it worked: The model's parameters are not identifiable, so no amount
+              of data would have made the original assertion true.
+              Pinning rank == dim - 3 turns the dummy-variable trap from
+              something rediscovered painfully into something the suite
+              states out loud, and pinning the norm records WHICH member
+              of the solution set ridge returns. The deficiency is
+              harmless: the unexcited directions form a subspace no real
+              feature vector enters, so confidence widths are unaffected.
+
+### Test and policy disagreed about which arm is "greedy"   2026-09-19 — R2
+
+Symptom:      test_propensities_follow_the_epsilon_greedy_formula fails.
+              With epsilon = 0.3 and K = 3 the greedy arm should carry
+              probability 0.8; the test observed 0.1, which is exactly
+              eps/K — the NON-greedy value.
+Expected:     probs[greedy] == (1 - eps) + eps/K.
+Hypotheses:   1) There is no unique greedy arm at the moment the test
+                 runs. The policy is fresh, so theta = 0 and A = lambda*I
+                 for every arm, and all three scores are identical. The
+                 test picks the greedy arm with a plain max() over a
+                 dict, which returns the first key in insertion order;
+                 the policy breaks ties with a seed-derived priority, on
+                 purpose, so that cold-start traffic is not all funnelled
+                 into whichever gateway happens to be listed first. Both
+                 are defensible and they disagree, so the test is
+                 asserting against an arbitrary tie-break.
+              2) The probability formula in the implementation assigns
+                 1 - eps to the wrong arm.
+              3) scores_for() recomputes something different from what
+                 decide() used, so the test is reading a different
+                 ranking than the policy acted on.
+Test that distinguishes them:
+              Print the three scores from a fresh policy together with
+              policy.greedy_action(context).
+                - all three scores exactly equal -> hypothesis 1
+                - scores differ and greedy_action is not their argmax
+                  -> hypothesis 2 or 3, separable by checking whether
+                  action_probs puts 1-eps+eps/K on greedy_action
+
+Actual cause: Hypothesis 1. On a fresh policy all three scores are
+              identical to twelve decimal places (2.292215056449), so
+              there is no unique greedy arm to agree about. The policy's
+              seed-derived tie-break chose cirrus; the test's plain
+              max() over the dict returned atlas, the first key. Both are
+              correct; the test was asserting against an arbitrary
+              choice, at the one moment in the run when the choice is
+              arbitrary by construction.
+Fix:          The test warms the policy with 200 asymmetric updates
+              (beacon rewarded, atlas not) before asserting the formula,
+              and checks that all three scores are now distinct. The
+              cold-start tie-break behaviour keeps its own test.
+Why it worked: The probability formula was never wrong; the test was
+              evaluating it at the one moment when "the greedy arm" is
+              undefined. Warming up makes the quantity the test names
+              actually exist. The two behaviours — a well-defined argmax
+              once there is evidence, and a randomised tie-break when
+              there is none — are now tested separately instead of
+              colliding in one assertion.
+
+### Cumulative regret is linear, not sublinear                    2026-09-19 — R2
+
+Symptom:      test_cumulative_regret_is_sublinear fails. Over 60,000
+              transactions, cumulative regret at the halfway point is
+              162.1 and at the end 266.6 — a ratio of 1.645 against a
+              threshold of 1.6. So the second half accumulated 104.5,
+              only a third less than the first half's 162.1.
+Expected:     Doubling the horizon should add materially less than the
+              first half did: LinUCB's regret bound is O(d sqrt(T log T)),
+              which is sublinear.
+Hypotheses:   1) Fixed-epsilon exploration has a LINEAR regret floor by
+                 construction. The wrapper explores at rate epsilon
+                 forever, so it pays roughly
+                 epsilon * E[gap to a uniformly chosen arm] per
+                 transaction indefinitely, and cumulative regret is
+                 Theta(T) asymptotically. The sublinear guarantee belongs
+                 to pure LinUCB (epsilon = 0), not to the epsilon-greedy
+                 wrapper we bolted on for propensity reasons. If so the
+                 test asserts a property this policy provably does not
+                 have, and the fault is in the test.
+              2) LinUCB is not converging: the greedy arm is still wrong
+                 at a roughly constant rate, because alpha is too large,
+                 the features are inadequate, or the ridge is mis-scaled.
+              3) The world is non-stationary, so there is a moving target
+                 to track. Ruled out by construction — this test uses
+                 clean_world, which has drift disabled and no incidents.
+Test that distinguishes them:
+              Split the late-run regret by whether the action taken was
+              the greedy one. The greedy arm is recoverable from the log:
+              it is the action carrying probability (1-eps)+eps/K.
+                - late regret almost entirely on NON-greedy actions, and
+                  the greedy-action regret near zero -> hypothesis 1
+                - substantial regret on greedy actions late in the run
+                  -> hypothesis 2
+              Then re-run with epsilon = 0 and compare the ratio: if it
+              drops well below 1.6, hypothesis 1 is confirmed and the
+              sublinear property is present in the policy that actually
+              claims it.
+
+Actual cause: Hypothesis 1, confirmed by the epsilon = 0 control.
+
+                eps     ratio full/half    mean regret/txn (last 12k)
+                0.05    1.645              0.00298
+                0.00    1.118              0.00050
+
+              At epsilon = 0 the ratio drops to 1.118 — comfortably
+              sublinear, and the property LinUCB actually claims. The
+              linear floor is a consequence of the epsilon-greedy wrapper
+              we added for propensity reasons, not a defect in LinUCB or
+              in the features. Hypothesis 3 was ruled out by
+              construction (clean_world has drift disabled).
+
+              One part of the decomposition did NOT come out as
+              hypothesis 1 predicted, and is recorded rather than glossed
+              over. The prediction was that late regret under epsilon =
+              0.05 would sit almost entirely on non-greedy actions. It
+              splits closer to evenly: 18.72 on non-greedy against 17.01
+              on greedy over the last 12,000 transactions. So roughly
+              half the floor is the exploration tax and half is residual
+              error in the greedy choice — and that residual is itself
+              about three times larger than the greedy-action regret at
+              epsilon = 0 (0.00142 vs 0.00050 per transaction), which is
+              not explained by the exploration argument alone. It does
+              not change the cause of the failure, and it is small in
+              absolute terms, but it is an open observation rather than a
+              closed one.
+Fix:          Split the assertion in two. The sublinearity test now runs
+              at epsilon = 0, where the bound applies. A companion test,
+              test_epsilon_greedy_pays_a_linear_regret_floor, asserts the
+              OPPOSITE for epsilon = 0.05 — that its steady-state regret
+              is more than 3x the epsilon = 0 floor.
+Why it worked: The original test asserted a theorem about a policy the
+              theorem does not cover. Both properties are real and both
+              matter, so both are now pinned: LinUCB learns, and the
+              exploration wrapper costs something measurable. Turning the
+              failure into a second assertion rather than deleting it
+              makes the price of loggability a regression test instead of
+              a paragraph someone has to remember.

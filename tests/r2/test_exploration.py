@@ -53,6 +53,20 @@ def test_propensities_follow_the_epsilon_greedy_formula(clean_world):
     txn = _txn(clean_world)
     k = len(clean_world.gateways)
 
+    # A fresh policy has no unique greedy arm: theta = 0 and A = ridge*I for
+    # every gateway, so all three scores are identical and "the argmax" is
+    # whatever the tie-break says. Give it enough asymmetric evidence for one
+    # arm to be genuinely ahead, so this test measures the probability formula
+    # rather than a tie-break convention.
+    from payroute.policies.runner import context_of
+
+    context = context_of(txn)
+    for _ in range(200):
+        policy.update(context, "beacon", 1.0)
+        policy.update(context, "atlas", 0.0)
+    scores = policy.scores(context)
+    assert len(set(scores.values())) == k, "warm-up failed to break the tie"
+
     decision = policy.decide(txn)
     greedy = max(policy.scores_for(txn), key=lambda n: policy.scores_for(txn)[n])
 

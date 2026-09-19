@@ -179,6 +179,19 @@ class Simulator:
         for incident in incidents:
             self.inject(incident)
 
+    def fresh(self) -> "Simulator":
+        """A new Simulator with the same config, seed and incidents.
+
+        Used to replay a run exactly — for computing regret against a log after
+        the fact, without having to keep every Transaction in memory.
+        """
+        replay = Simulator(self.config, seed=self.seed)
+        for incidents in self._gateway_incidents.values():
+            replay.inject_all(incidents)
+        for incidents in self._issuer_incidents.values():
+            replay.inject_all(incidents)
+        return replay
+
     # -- generation --------------------------------------------------------
 
     def next_transaction(self) -> Transaction:

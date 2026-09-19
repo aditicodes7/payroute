@@ -107,14 +107,44 @@ def test_confidence_width_is_directional(clean_world):
     netbanking-kotak, and it knows that."""
     policy = _policy(clean_world)
     seen = _ctx(method="upi", issuer="hdfc")
-    unseen = _ctx(method="netbanking", issuer="kotak")
+    # Genuinely unrelated: every categorical AND both continuous features
+    # differ. Changing only method and issuer leaves five of sixteen directions
+    # shared (category, amount, the two hour terms, bias), and learning about
+    # those legitimately reduces uncertainty for both contexts.
+    unrelated = _ctx(
+        method="netbanking", issuer="kotak", merchant_category="travel",
+        hour_of_day=3, amount_paise=900_000,
+    )
 
-    before_unseen = policy.confidence_width(unseen, "atlas")
+    before_unrelated = policy.confidence_width(unrelated, "atlas")
     for _ in range(300):
         policy.update(seen, "atlas", 1.0)
 
-    assert policy.confidence_width(seen, "atlas") < 0.2 * before_unseen
-    assert policy.confidence_width(unseen, "atlas") > 0.8 * before_unseen
+    assert policy.confidence_width(seen, "atlas") < 0.2 * before_unrelated
+    assert policy.confidence_width(unrelated, "atlas") > 0.95 * before_unrelated
+
+
+def test_partially_shared_contexts_do_generalise(clean_world):
+    """The other half of the same property, and the reason the test above had
+    to be written carefully: uncertainty is directional, so a context that
+    shares SOME directions with the training data does get more confident.
+
+    That is not a leak — it is exactly what makes LinUCB more data-efficient
+    than a per-segment lookup table, which learns nothing about a cell until it
+    has observations in that cell.
+    """
+    policy = _policy(clean_world)
+    seen = _ctx(method="upi", issuer="hdfc")
+    overlapping = _ctx(method="netbanking", issuer="kotak")  # same category, amount, hour
+
+    before = policy.confidence_width(overlapping, "atlas")
+    for _ in range(300):
+        policy.update(seen, "atlas", 1.0)
+    after = policy.confidence_width(overlapping, "atlas")
+
+    assert 0.5 * before < after < 0.9 * before, (
+        f"expected partial generalisation, got ratio {after / before:.3f}"
+    )
 
 
 def test_theta_recovers_a_known_linear_reward(clean_world):
@@ -124,6 +154,7 @@ def test_theta_recovers_a_known_linear_reward(clean_world):
     rng = np.random.default_rng(3)
     truth = rng.normal(size=policy.dim) * 0.1
 
+    contexts = []
     for _ in range(4_000):
         context = _ctx(
             method=str(rng.choice(list(clean_world.method_mix))),
@@ -132,10 +163,28 @@ def test_theta_recovers_a_known_linear_reward(clean_world):
             amount_paise=int(rng.integers(1_000, 1_000_000)),
             hour_of_day=int(rng.integers(0, 24)),
         )
+        contexts.append(context)
         x = policy.featuriser.transform(context)
         policy.update(context, "atlas", float(x @ truth))
 
-    assert np.allclose(policy.theta("atlas"), truth, atol=1e-3)
+    # theta itself is NOT identifiable, and asserting that it is would be
+    # asserting something false about the model. The three method one-hots sum
+    # to the bias column, as do the five issuer one-hots and the four category
+    # one-hots — three exact linear dependencies, so the design matrix has rank
+    # 13 of 16 and infinitely many parameter vectors give identical
+    # predictions. Ridge returns the minimum-norm one.
+    design = policy.A("atlas") - policy.ridge * np.eye(policy.dim)
+    assert np.linalg.matrix_rank(design) == policy.dim - 3
+
+    # What must hold is that PREDICTIONS are recovered.
+    errors = [
+        abs(float(policy.featuriser.transform(c) @ (policy.theta("atlas") - truth)))
+        for c in contexts[:500]
+    ]
+    assert max(errors) < 1e-5, f"max prediction error {max(errors):.2e}"
+
+    # And the minimum-norm solution is no larger than the generating one.
+    assert np.linalg.norm(policy.theta("atlas")) <= np.linalg.norm(truth) + 1e-9
 
 
 def test_score_is_prediction_plus_alpha_times_width(clean_world):

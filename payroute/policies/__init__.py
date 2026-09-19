@@ -6,6 +6,7 @@ tests/r1/test_propensity_invariant.py covers them automatically.
 """
 
 from payroute.decisionlog import Decision
+from payroute.policies.linucb import LinUCB
 from payroute.policies.baselines import (
     AlwaysCheapest,
     BestPerSegment,
@@ -23,4 +24,5 @@ __all__ = [
     "AlwaysCheapest",
     "HistoricallyBest",
     "BestPerSegment",
+    "LinUCB",
 ]
