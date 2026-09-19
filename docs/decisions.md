@@ -509,3 +509,94 @@ Why:          Under incidents LinUCB (eps=0.05) reaches 92.83% success
               time-to-react — now has a concrete baseline to beat rather
               than an abstract one.
 Rung:         R2 (motivates R4)
+
+### Stateful policies cannot be off-policy evaluated   2026-09-19 — R3
+
+Decision:     Target policies must expose `action_probs(context)` — a
+              distribution over actions that is a function of CONTEXT
+              alone. round_robin therefore cannot be a target policy and
+              is excluded. The target set is uniform_random,
+              always_cheapest, historically_best, best_per_segment and
+              LinUCB-greedy.
+Alternatives: Treat round_robin as uniform 1/K for evaluation purposes.
+Why:          Round robin's action depends on an internal counter, not on
+              the transaction. Calling it "uniform" would be the same
+              fiction we refused to log at R1, reappearing on the
+              evaluation side: correct arithmetic for the wrong reason,
+              true only because round robin's assignment happens to be
+              independent of context.
+              This is a real constraint rather than a limitation of our
+              implementation — off-policy evaluation reweights by
+              pi_e(a|x), and a policy whose action is not a function of x
+              has no such quantity. Worth knowing before someone tries to
+              evaluate a production router with session state in it.
+Rung:         R3
+
+### Two-fold cross-fitting for the reward model   2026-09-19 — R3
+
+Decision:     The reward model used by the Direct Method and by Doubly
+              Robust is cross-fitted: fit on fold A, score fold B, swap,
+              average. A record is never scored by a model that saw it.
+Alternatives: A single train/evaluate split (wastes half the data), or
+              fitting on everything (leaks).
+Why:          A reward model fitted on the rows it then scores is
+              optimistically accurate, so DM looks better than it is and
+              DR inherits the flattery. DR is the estimator we expect to
+              recommend, so that bias points straight at the conclusion
+              we most want to be true — exactly the direction of error a
+              reader should be most suspicious of. Cross-fitting costs
+              nothing extra and is what makes DR's guarantee hold.
+Rung:         R3
+
+### Bootstrap intervals primary; the normal interval shown failing   2026-09-19 — R3
+
+Decision:     Every OPE result carries a bootstrap percentile interval as
+              its `ci`, AND the normal-approximation interval as
+              `normal_ci`, reported alongside.
+Alternatives: Bootstrap only; or the normal approximation only, which is
+              what most quick implementations use.
+Why:          The normal approximation assumes the sample standard
+              deviation describes the spread. On a heavy-tailed
+              importance-weight distribution it does not, and the
+              interval comes out narrow, confident and wrong — worst
+              precisely in the low-exploration regime where the estimate
+              deserves the most scepticism. Keeping both makes that
+              failure visible rather than avoided: a reader can see that
+              the naive error bar does not merely widen as the log
+              degrades, it stays deceptively tight.
+Rung:         R3
+
+### Refuse rather than estimate when overlap fails   2026-09-19 — R3
+
+Decision:     An estimator raises `NoOverlapError` when the target policy
+              puts probability on actions the logging policy never took
+              in that context. Results that are computable but thin carry
+              trust = "untrustworthy" with warnings that quote the
+              effective sample size.
+Alternatives: Return the number and let the caller check the diagnostics.
+Why:          The stated expected failure for this rung is IPS blowing up
+              silently — a huge-variance number reported as a result
+              because nobody checked. At zero exploration the problem is
+              not high variance that more data would fix: the estimand is
+              NOT IDENTIFIED, because the log contains no information
+              about the actions the target would have taken differently.
+              Returning a number there would be inventing one. Rule 10 is
+              enforced by the return type: there is no way to obtain a
+              point estimate without its interval, its ESS and its
+              verdict.
+Rung:         R3
+
+### Clipped IPS included as a fifth estimator   2026-09-19 — R3
+
+Decision:     Implement weight clipping at a configurable threshold as a
+              separate estimator alongside DM, IPS, SNIPS and DR.
+Alternatives: Leaving it out — the rung's stated scope is four
+              estimators.
+Why:          It is what gets deployed in practice, and it turns the
+              bias/variance tradeoff from a sentence into a knob with a
+              number attached: on the toy log, clipping at 1.5 moves the
+              estimate from 1.00 to 0.75, and that movement IS the bias
+              being purchased. Having it in the comparison also means the
+              final chart can show a practitioner's fix sitting between
+              the naive and the principled ones.
+Rung:         R3
