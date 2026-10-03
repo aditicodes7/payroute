@@ -81,7 +81,7 @@ Propensity logging begins at R1 and is enforced by tests from R2 onward.
 | **R0** | Gateway simulator: method/issuer mix, diurnal arrivals, background drift, gateway & issuer incidents | ✅ complete — 39 tests |
 | **R1** | Round-robin, uniform-random, and three static-rule baselines | ✅ complete — 53 tests |
 | **R2** | LinUCB contextual bandit, propensities logged | ✅ complete — 40 tests |
-| R3 | DM / IPS / SNIPS / DR estimators vs ground truth | not started |
+| **R3** | DM / IPS / SNIPS / DR / clipped-IPS vs ground truth | ✅ complete — 31 tests |
 | R4 | Time-decayed per-terminal features; time-to-react | not started |
 | R5 | Constrained selection under a p95 latency budget | not started |
 | R6 | FastAPI + Redis + Kafka + Postgres service | not started |
@@ -234,6 +234,77 @@ degrade.
 Raw data: [`results/r2_epsilon_sweep.csv`](results/r2_epsilon_sweep.csv),
 [`results/r2_regret.csv`](results/r2_regret.csv).
 
+## R3 — off-policy evaluation
+
+60,000 transactions logged under LinUCB at a range of exploration rates,
+evaluating a fixed `best_per_segment` target whose **true value is 0.9482** —
+known exactly, because the world is synthetic.
+
+![estimator error](results/r3_estimator_error.png)
+
+| logging ε | ESS | DM | IPS | SNIPS | DR | clipped IPS |
+|---|---|---|---|---|---|---|
+| 0.30 | 15,686 | +0.0000 | +0.0105 | +0.0027 | +0.0027 | +0.0105 |
+| 0.10 | 6,778 | +0.0003 | −0.0051 | −0.0011 | −0.0008 | −0.0881 |
+| 0.05 | 3,370 | −0.0005 | +0.0120 | +0.0029 | +0.0036 | −0.1714 |
+| 0.02 | 1,302 | −0.0007 | −0.0195 | +0.0003 | +0.0003 | **−0.2556** |
+| 0.01 | 705 | −0.0000 | **+0.0443** | +0.0132 | +0.0135 | −0.2310 |
+| 0.00 | — | −0.0011 | **refused** | **refused** | **refused** | **refused** |
+
+IPS degrades exactly as the theory says: its interval widens from 0.027 to
+0.150 as effective sample size collapses from 15,686 to 705, and its error
+reaches +0.044. SNIPS and DR stay within ±0.014 throughout — the importance
+weight multiplies a residual rather than a reward, so a weight of 300 multiplies
+something near zero.
+
+At ε = 0 the three propensity-based estimators **refuse**: *no overlap on 16,356
+of 60,000 records*. That is not high variance that more data would fix. The log
+contains no information about the actions the target would have taken
+differently, so the value is not identified and any number returned would be
+invented.
+
+---
+
+## When this OPE result should NOT be trusted
+
+Quantified, because "be careful" is not a threshold.
+
+**1. No overlap — the estimate does not exist.** If the target policy puts
+probability on an action the logging policy could not have taken, the estimators
+raise `NoOverlapError` rather than returning a number. Our ε = 0 log triggers
+this on 27% of its records.
+
+**2. Effective sample size below 1,000 — treat the interval as a floor.** Below
+100 the result is reported as `untrustworthy`. ESS is
+`(Σw)² / Σw²`: at ε = 0.01 our 60,000-row log carries **705 transactions' worth
+of evidence**. The row count is not the sample size.
+
+**3. A diagnostic that improves while the estimate degrades.** `clipped_ips` is
+the cautionary tale, and we built it by accident before catching it. Its reported
+interval *narrows* from 0.027 to 0.012 as its error grows from +0.01 to −0.26.
+Clipping makes the weights uniform, so every variance-based diagnostic looks
+healthier the more information is thrown away. At ε = 0.02, clipping just **0.2%
+of records removed 27% of the estimate's value** — which is why the verdict now
+escalates on clipped *weight mass*, not on the reassuring record count. See
+[`docs/bugs.md`](docs/bugs.md).
+
+**4. A narrow interval from the Direct Method means nothing.** DM never reads a
+propensity, so its interval reflects only the spread of its own predictions. It
+returns 0.9471 ± 0.0002 on the ε = 0 log — confident, precise, and derived from
+data that cannot contradict it.
+
+**5. The honest caveat about our own result.** In this simulator, success
+probability is `base[method] + adjust[issuer]` — *exactly linear* in the features
+the reward model uses. DM is therefore perfectly specified and has no bias to
+exhibit, which is why it tops the table. We tried to remove that advantage with a
+variant blinded to the issuer; it barely moved (+0.0007), because the model is
+fitted on a log whose action distribution already correlates with the target's,
+so its errors cancel. **We did not reproduce DM's known failure mode, and we
+decline to manufacture one.** Read the DM column as a property of this world, not
+as evidence that the Direct Method is safe.
+
+Raw data: [`results/r3_ope.csv`](results/r3_ope.csv).
+
 ---
 
 ## Running it
@@ -242,10 +313,11 @@ Raw data: [`results/r2_epsilon_sweep.csv`](results/r2_epsilon_sweep.csv),
 python3 -m venv .venv
 ./.venv/bin/pip install -e . pytest matplotlib
 
-./.venv/bin/python -m pytest -q                        # 132 tests
+./.venv/bin/python -m pytest -q                        # 163 tests
 ./.venv/bin/python experiments/r0_simulator_profile.py # simulator charts
 ./.venv/bin/python experiments/r1_baselines.py         # baseline table
 ./.venv/bin/python experiments/r2_linucb.py            # LinUCB + regret curve
+./.venv/bin/python experiments/r3_ope.py               # estimator comparison
 ```
 
 ## Layout
@@ -279,6 +351,4 @@ docs/             decisions.md and bugs.md, maintained as we go
 - The measurement table across all rungs against the R1 baselines.
 - The OPE estimator comparison: error against ground truth, and variance as the
   logging policy becomes more deterministic.
-- **"When this OPE result should NOT be trusted"** — quantified with effective
-  sample size. A point estimate without a confidence interval and an ESS is not
-  a result in this project.
+- ~~"When this OPE result should NOT be trusted"~~ — written, above.

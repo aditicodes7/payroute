@@ -600,3 +600,34 @@ Why:          It is what gets deployed in practice, and it turns the
               final chart can show a practitioner's fix sitting between
               the naive and the principled ones.
 Rung:         R3
+
+### Limitation: our simulator flatters the Direct Method   2026-09-19 — R3
+
+Decision:     State this in the README rather than letting the R3 chart
+              imply that DM is safe.
+Alternatives: Reporting the estimator table as-is; or manufacturing a
+              failure until DM looked bad.
+Why:          In our world, success probability is
+              base[method] + adjust[issuer] — EXACTLY linear in the
+              features the reward model uses. DM's model is therefore
+              perfectly specified and it has no bias to exhibit: its
+              error is under 0.0011 at every exploration level, making it
+              the most accurate estimator in the table.
+              We tried to remove that advantage with a deliberately
+              misspecified variant that cannot see the issuer. It barely
+              moved (error +0.0007 at eps=0.01), and the reason is
+              instructive: the reward model is fitted on a log whose
+              action distribution is already correlated with the target
+              policy's, so the model's per-gateway averages are taken
+              over exactly the contexts where the target sends traffic,
+              and the errors cancel.
+              So we did NOT reproduce DM's known failure mode, and we
+              decline to manufacture one. What the table does show is
+              the danger in its purest form: at eps = 0, where every
+              propensity-based estimator refuses, DM returns 0.9471 with
+              an interval of width 0.0004 from a log containing zero
+              information about 16,356 of the 60,000 decisions. It is
+              accurate there by luck of a correct model, and nothing in
+              its output would look any different if the model were
+              wrong.
+Rung:         R3

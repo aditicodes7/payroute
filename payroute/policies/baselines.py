@@ -63,6 +63,14 @@ class RoundRobin:
         self._next += 1
         return Decision(chosen, _one_hot(self.gateways, chosen), 1.0)
 
+    def action_probs(self, context=None):
+        raise NotImplementedError(
+            "round_robin cannot be an off-policy evaluation target. Its action depends on an "
+            "internal counter rather than on the transaction, so pi(a|x) does not exist for it. "
+            "Calling it 'uniform 1/K' would be correct arithmetic for the wrong reason — true "
+            "only because its assignment happens to be independent of context."
+        )
+
 
 class UniformRandom:
     """Draws uniformly at random, so 1/K is simply true rather than asserted.
@@ -79,9 +87,12 @@ class UniformRandom:
         self._rng = np.random.default_rng(seed)
         self._p = 1.0 / len(self.gateways)
 
+    def action_probs(self, context=None):
+        return {name: self._p for name in self.gateways}
+
     def decide(self, txn: Transaction) -> Decision:
         chosen = self.gateways[int(self._rng.integers(len(self.gateways)))]
-        return Decision(chosen, {name: self._p for name in self.gateways}, self._p)
+        return Decision(chosen, self.action_probs(), self._p)
 
 
 class AlwaysCheapest:
@@ -100,11 +111,15 @@ class AlwaysCheapest:
         self.gateways = config.gateway_names
         self._fees = [(g.name, g.fee.flat_paise, g.fee.bps) for g in config.gateways]
 
+    def action_probs(self, context):
+        amount = context["amount_paise"]
+        chosen = min(self._fees, key=lambda f: (f[1] + (f[2] * amount) // 10_000, f[0]))[0]
+        return _one_hot(self.gateways, chosen)
+
     def decide(self, txn: Transaction) -> Decision:
-        chosen = min(
-            self._fees, key=lambda f: (f[1] + (f[2] * txn.amount_paise) // 10_000, f[0])
-        )[0]
-        return Decision(chosen, _one_hot(self.gateways, chosen), 1.0)
+        probs = self.action_probs({"amount_paise": txn.amount_paise})
+        chosen = max(probs, key=lambda n: probs[n])
+        return Decision(chosen, probs, 1.0)
 
 
 class _Fitted:
@@ -144,8 +159,11 @@ class HistoricallyBest(_Fitted):
         best = max(sorted(stats), key=lambda name: stats[name][0] / stats[name][1])
         return cls(best, sorted(stats), train_seed=log.seed)
 
+    def action_probs(self, context=None):
+        return _one_hot(self.gateways, self.gateway)
+
     def decide(self, txn: Transaction) -> Decision:
-        return Decision(self.gateway, _one_hot(self.gateways, self.gateway), 1.0)
+        return Decision(self.gateway, self.action_probs(), 1.0)
 
 
 class BestPerSegment(_Fitted):
@@ -204,6 +222,11 @@ class BestPerSegment(_Fitted):
 
         return cls(table, fallback, gateways, train_seed=log.seed)
 
+    def action_probs(self, context):
+        chosen = self.table.get((context["method"], context["issuer"]), self.fallback)
+        return _one_hot(self.gateways, chosen)
+
     def decide(self, txn: Transaction) -> Decision:
-        chosen = self.table.get((txn.method, txn.issuer), self.fallback)
-        return Decision(chosen, _one_hot(self.gateways, chosen), 1.0)
+        probs = self.action_probs({"method": txn.method, "issuer": txn.issuer})
+        chosen = max(probs, key=lambda n: probs[n])
+        return Decision(chosen, probs, 1.0)

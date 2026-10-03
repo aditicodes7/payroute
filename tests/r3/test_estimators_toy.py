@@ -125,7 +125,12 @@ def test_clipped_ips_trades_bias_for_variance(toy_log, always_atlas):
 
     result = clipped_ips(toy_log, always_atlas, clip=1.5)
     assert result.estimate == pytest.approx(0.75)
-    assert result.max_weight == pytest.approx(1.5)
+    # max_weight and ESS report the RAW weights, because they describe how much
+    # evidence the log holds about this target — not what the estimator did to
+    # its own arithmetic afterwards. Reporting the post-clip maximum (1.5) would
+    # hide precisely what a reader needs to see.
+    assert result.max_weight == pytest.approx(2.0)
+    assert any("importance weight" in w for w in result.warnings)
 
 
 def test_ips_can_return_a_value_outside_the_possible_reward_range():

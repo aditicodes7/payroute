@@ -93,6 +93,19 @@ class Oracle:
         """What WOULD have happened on this gateway, whether or not we chose it."""
         return self._sim.resolve(txn, gateway)
 
+    def true_success_value(self, probs_fn, transactions) -> float:
+        """Exact success rate of a policy expressed as a distribution over
+        actions. This is R3's answer key: no Monte-Carlo error, because it
+        integrates over the action distribution rather than sampling it."""
+        if not transactions:
+            raise ValueError("cannot compute a policy value over zero transactions")
+        total = 0.0
+        for txn in transactions:
+            for action, p in probs_fn(txn).items():
+                if p > 0.0:
+                    total += p * self.true_success_prob(txn, action)
+        return total / len(transactions)
+
     def true_policy_value(
         self,
         policy: Callable[[Transaction], str],

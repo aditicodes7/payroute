@@ -87,25 +87,27 @@ def test_trust_verdict_tracks_effective_sample_size(toy_log, always_atlas):
     assert ips(thin, StubTarget({"atlas": 1.0, "beacon": 0.0, "cirrus": 0.0})).trust != "ok"
 
 
-def test_the_normal_interval_understates_uncertainty_on_a_skewed_log():
+def test_the_normal_interval_extends_into_impossible_values():
     """Reported alongside the bootstrap interval specifically to be seen
-    failing.
+    failing — but the failure is in SHAPE, not width.
 
-    The normal approximation assumes the sample standard deviation describes the
-    spread. On a heavy-tailed weight distribution it does not, and the interval
-    comes out narrow, confident and wrong — worst exactly in the regime where
-    the estimate needs the most scepticism.
+    The normal approximation is symmetric about the estimate, so on a skewed
+    weight distribution it runs off the end of the estimand's support: it offers
+    a negative success rate as a plausible value. A percentile interval cannot,
+    because no resample can produce one. The two widths are driven by the same
+    underlying variance and are not reliably ordered, which is what an earlier
+    version of this test got wrong (see docs/bugs.md).
     """
     from payroute.ope import ips
 
     pairs = [("atlas", 0.004, 1)] * 3 + [("beacon", 0.996, 1)] * 1_500
     result = ips(_log(pairs), StubTarget({"atlas": 1.0, "beacon": 0.0, "cirrus": 0.0}))
 
-    normal_width = result.normal_ci[1] - result.normal_ci[0]
-    bootstrap_width = result.ci[1] - result.ci[0]
-    assert normal_width < bootstrap_width, (
-        f"expected the normal interval to be the narrower (and more misleading) one: "
-        f"normal {normal_width:.4f} vs bootstrap {bootstrap_width:.4f}"
+    assert result.normal_ci[0] < 0.0, (
+        f"expected the symmetric interval to run below zero, got {result.normal_ci}"
+    )
+    assert result.ci[0] >= 0.0, (
+        f"a percentile interval cannot contain a negative success rate, got {result.ci}"
     )
 
 

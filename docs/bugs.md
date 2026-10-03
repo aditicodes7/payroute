@@ -472,3 +472,186 @@ Why it worked: The original test asserted a theorem about a policy the
               failure into a second assertion rather than deleting it
               makes the price of loggability a regression test instead of
               a paragraph someone has to remember.
+
+### Normal and bootstrap interval widths were not reliably ordered   2026-09-19 — R3
+
+Symptom:      test_the_normal_interval_understates_uncertainty_on_a_skewed_log
+              fails by a hair: normal width 1.1286 against bootstrap
+              width 1.1266. The assertion wanted the normal interval to
+              be the narrower of the two; it came out 0.2% wider.
+Expected:     On a heavy-tailed importance-weight distribution the normal
+              approximation should visibly understate the spread.
+Hypotheses:   1) The test's premise is wrong. Percentile-bootstrap width
+                 and normal width are not reliably ordered — both are
+                 driven by the same underlying variance. The normal
+                 interval's real failure is in SHAPE and COVERAGE, not
+                 width: it is symmetric about the estimate and can extend
+                 into values the estimand cannot take, which a percentile
+                 interval cannot do. With only three heavy records the
+                 bootstrap distribution is essentially Poisson(3) on the
+                 count of heavy draws, and its spread happens to match.
+              2) 400 bootstrap resamples is too few to reach the tail, so
+                 the percentiles are understated and the interval is
+                 artificially narrow. More resamples would widen it.
+              3) The normal interval is computed wrongly — a mistake in
+                 the influence function or in ddof — making it too wide.
+Test that distinguishes them:
+              (a) Re-run with 5,000 resamples. If the bootstrap width
+                  grows materially, hypothesis 2.
+              (b) Print both intervals in full. A success rate cannot be
+                  negative or above 1; if the normal interval crosses
+                  those bounds while the bootstrap stays inside them,
+                  that is hypothesis 1 and it identifies what the test
+                  should have been asserting.
+              (c) Recompute the normal half-width directly as
+                  1.96 * sd(w*r) / sqrt(n) and compare. Agreement rules
+                  out hypothesis 3.
+
+Actual cause: Hypothesis 1, with hypothesis 2 as a minor contributor.
+              Hypothesis 3 ruled out: the implementation's normal
+              half-width is 0.5643, identical to a direct
+              1.96*sd(w*r)/sqrt(n) computation.
+
+              (b) is decisive. The two intervals are:
+                normal    [-0.0653, +1.0633]
+                bootstrap [+0.0000, +1.1266]
+              The normal interval is symmetric about the estimate and
+              runs to a NEGATIVE success rate, which is not a value the
+              estimand can take. The bootstrap's lower bound is exactly
+              0, because no resample can produce a negative one. That —
+              not the width — is the property that separates them, and it
+              is what the test should have asserted.
+              (Both upper bounds exceed 1, but that is a property of IPS
+              itself rather than of the interval method, and it is
+              already covered by
+              test_ips_can_return_a_value_outside_the_possible_reward_range.)
+
+              (a) contributes a little: raising the resample count from
+              400 to 5,000 widens the bootstrap interval from 1.1453 to
+              1.1597, about 1.3%. So 400 does slightly understate the
+              tail on a log this skewed, though nowhere near enough to
+              explain the failure.
+Fix:          The test now asserts the shape property instead of the
+              width one: the normal interval's lower bound must be below
+              zero, and the bootstrap's must not be. Renamed to
+              test_the_normal_interval_extends_into_impossible_values.
+              BOOTSTRAP_RESAMPLES raised from 400 to 1,000, with the
+              measurement that motivated it recorded in a comment.
+Why it worked: The original assertion compared two quantities that are
+              driven by the same variance and are therefore not reliably
+              ordered — it passed or failed on a coin flip. The shape
+              property is structural: a symmetric interval around a
+              skewed estimate WILL run off the end of the estimand's
+              support, and a percentile interval never can. The test now
+              fails only if the thing it names stops being true.
+
+### clipped_ips reports a healthy ESS while being wildly biased   2026-09-19 — R3
+
+Symptom:      Two symptoms, one suspected cause.
+              (a) In the R3 table, clipped_ips is the worst estimator in
+                  the set by a wide margin — errors of -0.088, -0.171,
+                  -0.256, -0.231 as epsilon falls, against IPS's worst of
+                  +0.044 — and its trust verdict says "ok" at every one
+                  of those points. Its reported ESS RISES as exploration
+                  falls: 11,384 -> 14,926 -> 21,596 -> 29,862, while
+                  IPS's falls 6,778 -> 3,370 -> 1,302 -> 705 on the same
+                  logs.
+              (b) The estimator-error chart is unreadable because
+                  clipped_ips zigzags: plotted against its own ESS its
+                  points are not ordered by epsilon at all. direct_method
+                  meanwhile collapses to a single x position, since its
+                  ESS is always n.
+Expected:     ESS should fall as the logging policy becomes
+              deterministic, for every estimator, because it is supposed
+              to describe how much usable evidence the LOG contains.
+Hypotheses:   1) ESS is being computed on each estimator's MODIFIED
+                 weights. Clipping makes the weights artificially
+                 uniform, which raises ESS by construction — so the
+                 number stops measuring coverage of the log and starts
+                 measuring the variance of a deliberately truncated
+                 statistic. Coverage is a property of the (log, target)
+                 pair, not of an estimator's variance-reduction trick.
+                 This would explain both symptoms at once: the same
+                 mistake makes the verdict wrong and the x-axis
+                 meaningless.
+              2) The clip threshold of 20 is simply too aggressive for
+                 these logs. The bias would then be real and correctly
+                 reported, with nothing wrong with the diagnostic.
+              3) The verdict logic escalates only on ESS and max_weight
+                 and never on clipped mass, so even a correct ESS would
+                 not flag this — the clipped-fraction warning is emitted
+                 but cannot change `trust`.
+Test that distinguishes them:
+              For each epsilon, print the ESS computed on RAW weights
+              alongside the ESS on clipped weights, plus the fraction of
+              weights clipped.
+                - raw ESS falls monotonically while clipped ESS rises
+                  -> hypothesis 1
+              Then sweep clip in {5, 20, 100, inf} at one epsilon.
+                - bias shrinking toward zero as clip grows, with clipped
+                  ESS converging to raw ESS -> hypothesis 2 contributes
+                - a large clipped fraction coinciding with a healthy raw
+                  ESS -> hypothesis 3 matters independently of 1
+
+Actual cause: Hypothesis 1 confirmed, with 2 and 3 both contributing.
+
+                eps   raw ESS   clipped ESS   % clipped   clipped err
+                0.30   15,686        15,686        0.0%      +0.0105
+                0.10    6,778        11,384        0.9%      -0.0881
+                0.05    3,370        14,926        0.5%      -0.1714
+                0.02    1,302        21,596        0.2%      -0.2556
+                0.01      705        29,862        0.1%      -0.2310
+
+              Raw ESS falls monotonically; clipped ESS RISES. Computing
+              ESS on the estimator's own modified weights makes it
+              measure the variance of a deliberately truncated statistic
+              rather than the coverage of the log — so the more
+              aggressively we throw information away, the healthier the
+              diagnostic claims to be.
+
+              The clip sweep at eps=0.02 confirms hypothesis 2 as a
+              contributor: error -0.283 at clip=5, -0.256 at 20, -0.110
+              at 100, and -0.0195 at clip=inf, where it equals IPS
+              exactly and clipped ESS converges to the raw 1,302.
+
+              The sharpest part is hypothesis 3, and it is worse than
+              expected. At eps=0.02 only 0.2% OF RECORDS are clipped, and
+              that removes roughly 27% of the estimate's value. At low
+              exploration nearly all the information lives in a handful
+              of high-weight records, so the fraction of records clipped
+              is a reassuring and useless number. The quantity that
+              matters is the fraction of WEIGHT MASS removed, which we
+              were not computing at all.
+
+              Worth stating plainly: this is precisely the failure this
+              rung exists to study — a diagnostic that reports "ok" while
+              the estimate is off by 0.26 — and we built one.
+Fix:          Three changes.
+              (a) `_result` now documents and enforces that `weights` is
+                  always the RAW importance weights, so `ess` and
+                  `max_weight` describe the (log, target) pair rather
+                  than an estimator's internal arithmetic. clipped_ips
+                  passes raw weights; direct_method now reports the
+                  log-level ESS too, with a warning that its own interval
+                  reflects only the spread of its predictions.
+              (b) The verdict gained an escalation path that ESS cannot
+                  see: clipped WEIGHT MASS above 5% marks an estimate
+                  suspect and above 20% untrustworthy, and the warning
+                  quotes the mass alongside the (misleadingly small)
+                  record count.
+              (c) The chart's x axis is the log-level ESS, shared by
+                  every estimator. Plotting each against its own ESS made
+                  clipped_ips zigzag and collapsed direct_method to a
+                  single point.
+              One test changed with it:
+              test_clipped_ips_trades_bias_for_variance now expects
+              max_weight 2.0 (raw) rather than 1.5 (post-clip).
+Why it worked: The diagnostic now measures the thing it is named after.
+              clipped_ips at eps=0.02 went from ESS 21,596 / trust "ok"
+              to ESS 1,302 / trust "untrustworthy", which is what a
+              reader needs in order to disbelieve an estimate that is
+              0.26 away from the truth. The interval-width panel of the
+              chart now shows the signature plainly: clipped_ips's
+              reported interval gets NARROWER as its error grows, which
+              is the precise shape of a diagnostic pointing the wrong
+              way.
