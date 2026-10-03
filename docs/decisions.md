@@ -631,3 +631,107 @@ Why:          In our world, success probability is
               its output would look any different if the model were
               wrong.
 Rung:         R3
+
+### Decay lives in the features, not in the bandit's statistics   2026-10-03 — R4
+
+Decision:     Add explicit time-decayed per-gateway health features to the
+              context and leave LinUCB's A and b as unweighted sums.
+              Discounted LinUCB (A <- gamma*A + xx^T) is implemented as a
+              CONTROL to measure against, not as the primary design.
+Alternatives: (a) Discount the sufficient statistics only. (b) Both.
+Why:          This world has two timescales. The (method, issuer,
+              gateway) quality matrix is stationary — a bank's acquiring
+              relationship with a gateway does not change hour to hour.
+              Gateway health is non-stationary and moves in minutes.
+              Discounting the sufficient statistics decays both at the
+              same rate, so adaptivity is bought by permanently degrading
+              the estimate of the thing that never changes: you forget
+              the issuer structure in order to notice an outage.
+              Separating them lets each be learned at its own timescale.
+              It also matches R6: terminal health lives in Redis and is
+              read per request, so the signal is data the service looks
+              up rather than a property of the model. R4 and R6 then
+              agree instead of fighting.
+Rung:         R4
+
+### Decay is in wall-clock time, never in transaction counts   2026-10-03 — R4
+
+Decision:     The health store decays by elapsed time with a half-life in
+              minutes.
+Alternatives: A rolling window of the last N transactions, which is
+              simpler and is what most implementations reach for.
+Why:          Arrivals are diurnal by a factor of seven: 1,000
+              transactions span 33 minutes at the 03:00 trough and 5
+              minutes at the 15:00 peak. A count-based window would react
+              at a different wall-clock speed depending on the hour, so
+              "time to react" would not be a single quantity and the
+              rung's headline number would be uninterpretable.
+Rung:         R4
+
+### The prior does not decay                      2026-10-03 — R4
+
+Decision:     health = (S + prior_successes) / (N + prior_trials), with
+              the prior added at read time rather than initialised into
+              the decaying counters.
+Alternatives: Seeding S and N with the prior and letting it decay with
+              everything else.
+Why:          An exponentially weighted count shrinks toward zero during
+              quiet periods. If the prior decays too, the store ends up
+              with no evidence at all, and the next single observation
+              dominates completely — one failure swings health from 0.95
+              to near zero and the policy abandons a working gateway.
+              That is exactly the overreaction failure predicted for this
+              rung. A non-decaying prior is a permanent floor on the
+              amount of evidence required to move the number; the
+              half-life governs how fast real evidence wins.
+Rung:         R4
+
+### Feedback delay is modelled now, defaulting to zero   2026-10-03 — R4
+
+Decision:     `TerminalHealth` takes a `feedback_delay`, and
+              `health_at(t)` folds in only outcomes whose observation
+              time is at or before t. R4 runs with delay zero.
+Alternatives: Assume instantaneous feedback and add the delay at R6.
+Why:          In the simulator an outcome is available the instant the
+              transaction resolves. In the service it arrives over Kafka,
+              seconds later. A policy tuned on zero-latency feedback
+              behaves differently when the feedback is late, and nothing
+              in the output would say so — the same train/serve skew
+              flagged for R6 and R7, arriving early. The mechanism costs
+              one timestamp field now; retrofitting it would mean
+              re-running every R4 number.
+Rung:         R4
+
+### Time to react is defined with a persistence requirement   2026-10-03 — R4
+
+Decision:     Onset = minutes from incident start until the share of
+              traffic to the degraded gateway falls below half its
+              pre-incident share AND stays below for a sustained window.
+              Recovery = minutes from incident end until the share
+              returns to within a band of its pre-incident level.
+              Measured per incident across many incidents and reported as
+              a distribution.
+Alternatives: First bin below the threshold; or eyeballing the chart.
+Why:          Without persistence, one noisy bin claims a reaction that
+              did not happen — and with background drift switched on,
+              noisy bins are guaranteed. Without a distribution across
+              incidents, a single favourable outage becomes the headline
+              number. A policy that cannot react at all must report None
+              rather than a number produced by noise, which is asserted
+              against round robin.
+Rung:         R4
+
+### The tradeoff is measured on both axes   2026-10-03 — R4
+
+Decision:     The half-life sweep reports median time-to-react AND a
+              routing-instability measure taken on CLEAN periods, where
+              every diversion away from a healthy gateway is a false
+              alarm paid for in revenue.
+Alternatives: Reporting time-to-react alone and picking the fastest.
+Why:          With only the first axis, "shorter half-life is better"
+              looks true and the choice of half-life becomes a tuned
+              constant nobody can defend. The second axis is what makes
+              it a decision. R0's background drift exists precisely so
+              this cost is real rather than theoretical — in a world
+              without noise, any half-life would look good.
+Rung:         R4
