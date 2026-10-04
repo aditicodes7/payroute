@@ -815,3 +815,119 @@ Why:          Under a dense incident schedule, success rate runs
               measurement agrees with it. That is worth more than either
               on its own.
 Rung:         R4
+
+### The fee sits inside the probability term   2026-10-04 — R5
+
+Decision:     Expected net revenue is
+              `p(x,g) * (value(x) - fee(x,g))`, not
+              `p(x,g) * value(x) - fee(x,g)` as the original brief wrote
+              it.
+Alternatives: Following the brief's formula literally.
+Why:          R0 decided the gateway fee is charged on success only, so on
+              a failure we earn nothing and pay nothing. The two
+              formulations differ by `(1 - p) * fee`, which at p = 0.9 and
+              a 1,000-paise fee is 100 paise on every transaction —
+              roughly 5% of the margin, and biased consistently toward
+              reliable gateways. Flagged at R1 when the fee convention was
+              set; corrected here where the objective is actually used,
+              and asserted by a test that compares against the wrong
+              formula explicitly.
+Rung:         R5
+
+### Feasible-set filter on per-gateway p95   2026-10-04 — R5
+
+Decision:     Keep only gateways whose recent p95 latency is within
+              budget, then maximise expected net revenue over that set.
+Alternatives: (a) A per-transaction hard latency bound — wrong, since
+              latency is stochastic and any gateway can exceed on any
+              transaction. (b) A portfolio constraint allowing individual
+              transactions to exceed so long as the fleet p95 holds.
+Why:          The filter gives a guarantee rather than a hope: if every
+              gateway in the feasible set has P(latency > B) <= 0.05,
+              then so does any mixture of them, so the FLEET p95 is within
+              budget by construction and can be proved in a line instead
+              of checked after the fact.
+              The portfolio version is more efficient — it could send 5%
+              of traffic to a slow but excellent gateway — but it needs
+              global budget accounting across requests, which is awkward
+              inside R6's 30ms budget. The filter is conservative and
+              leaves revenue on the table; that is a stated limitation,
+              not a hidden one.
+Rung:         R5
+
+### Infeasible decisions are recorded, never silently relaxed   2026-10-04 — R5
+
+Decision:     When no gateway meets the budget the policy routes to the
+              FASTEST one and records `constraint_status = "infeasible"`
+              with `predicted_p95_ms`. Two explicit fields on the
+              decision record; no general metadata bag.
+Alternatives: (a) Fall back to unconstrained argmax — the predicted bug
+              for this rung. (b) Raise and drop the transaction. (c) A
+              `meta: dict` for this and anything else later.
+Why:          A payment router cannot refuse to route, so "fail loudly"
+              has to mean "the log says it failed" rather than "the
+              request dies". With the status on every record, the
+              violation rate becomes a number reported next to the p95:
+              the claim is "the constraint held on 99.x% of decisions",
+              never an unqualified "the constraint holds".
+              Picking the fastest rather than the most profitable when
+              infeasible means that when the constraint cannot be met,
+              the thing it was protecting is what gets optimised.
+              Named fields rather than a metadata bag because a bag
+              invites everything to be dumped in it unreviewed, and
+              because named fields can be asserted on.
+Rung:         R5
+
+### The latency window starts optimistic   2026-10-04 — R5
+
+Decision:     A gateway with no latency samples is assigned a configured
+              prior p95 that keeps it inside the feasible set.
+Alternatives: Treating unseen gateways as infeasible until proven fast.
+Why:          A pessimistic cold start is a trap, not a constraint: an
+              excluded gateway is never routed to, so it never produces
+              latency samples, so it is never readmitted. Permanent
+              exclusion is a deletion. The optimistic prior costs a small
+              number of slow transactions while the window fills.
+Rung:         R5
+
+### Known consequence: constraining the action set destroys overlap   2026-10-04 — R5
+
+Decision:     Record this rather than work around it, and measure how
+              much of the policy space the constrained log can no longer
+              evaluate.
+Alternatives: Giving excluded gateways a small floor propensity so that
+              overlap survives.
+Why:          An excluded gateway has propensity exactly zero, which is
+              R3's no-overlap condition — so a constrained policy's log
+              raises NoOverlapError for any target that would have chosen
+              an excluded gateway. This is the exploration/evaluability
+              tradeoff from R2 and R3 arriving from a different
+              direction: the more aggressively you constrain, the less
+              your logs can tell you about the alternatives you refused.
+              A floor propensity would preserve evaluability at the cost
+              of deliberately violating the latency budget on some
+              traffic — a real option, but one that should be chosen
+              explicitly with its price attached rather than slipped in
+              to make the estimators happy.
+Rung:         R5
+
+### Keep the fee economics; measure the spread instead of retuning   2026-10-04 — R5
+
+Decision:     Leave the gateway fees as configured and add a fee-spread
+              sensitivity sweep: hold everything else fixed, vary the
+              spread, and locate the point where the success term starts
+              to outweigh the fee term.
+Alternatives: Retune the fees now so R5 has a richer tradeoff, as the R1
+              entry contemplated.
+Why:          Margin per successful transaction is 130/110/90 bps across
+              cirrus/atlas/beacon — a 44% spread — while success varies
+              by at most a 13% ratio, so the optimum is fee-dominated and
+              R5 will collapse toward "always cheapest". Retuning would
+              make the rung look better AND would invalidate R0-R4 for
+              comparison AND would be changing the world after seeing the
+              results, which the R1 entry explicitly warned against.
+              The sweep turns the awkwardness into a result — "at what
+              fee spread does reliability start paying for itself?" —
+              costs one loop, rewrites no history, and is a better
+              artifact than a retuned world would have been.
+Rung:         R5 (closes the R1 open item)
