@@ -40,11 +40,22 @@ CLEAN_N = 40_000
 SEED = 5
 HORIZON = timedelta(hours=22)
 HALF_LIVES = [0.5, 2.0, 5.0, 15.0, 60.0]
+
+# The default incident rate yields about five incidents over the horizon, and a
+# median of four measurements is an anecdote with error bars drawn on. Raising
+# the rate is a change to the MEASUREMENT INSTRUMENT, not to the world the
+# policies are judged in: it gives more samples of the same reaction process.
+# Note that it also degrades the world overall, so the success and revenue
+# columns here are not comparable with the other rungs' tables.
+INCIDENTS_PER_GATEWAY_PER_DAY = 5.0
 BINS, MIN_COUNT = 1.0, 20
 
 
 def incident_schedule(cfg):
-    return sample_gateway_incidents(cfg, seed=4242, start=START, horizon=HORIZON)
+    return sample_gateway_incidents(
+        cfg, seed=4242, start=START, horizon=HORIZON,
+        per_gateway_per_day=INCIDENTS_PER_GATEWAY_PER_DAY,
+    )
 
 
 def run_with_incidents(cfg, policy, incidents):
@@ -124,7 +135,13 @@ def main() -> None:
         writer.writeheader()
         writer.writerows(rows)
 
-    # --- the tradeoff, on two panels because a dual y-axis would be a lie ----
+    render(rows)
+    print(f"\nwritten to {RESULTS}/")
+
+
+def render(rows) -> None:
+    # Two panels rather than one chart with two y-scales: a dual axis lets the
+    # author choose the scales that make the story they want.
     sweep = [r for r in rows if r["half_life_minutes"] != ""]
     xs = [r["half_life_minutes"] for r in sweep]
 
@@ -155,19 +172,36 @@ def main() -> None:
     top.set_xlim(min(xs) * 0.6, max(xs) * 2.6)
     top.set_ylim(0, max(onset_y + recover_y) * 1.15)
     bottom.set_ylim(0, max(jitter_y) * 1.15)
-    top.set_title("time to react, median over the incident schedule (minutes)",
-                  color=INK, fontsize=10.5, loc="left", pad=8)
-    bottom.set_title("bin-to-bin routing jitter on a clean run — the cost of a short memory",
-                     color=INK, fontsize=10.5, loc="left", pad=8)
+    top.set_title(
+        "median over 12 measured incidents: recovery separates the settings, onset does not",
+        color=INK, fontsize=10.5, loc="left", pad=8,
+    )
+    bottom.set_title(
+        "routing jitter on a clean run — the expected cost of a short memory, which does not appear",
+        color=INK, fontsize=10.5, loc="left", pad=8,
+    )
     bottom.set_xlabel("health half-life (minutes)", color=INK_MUTED, fontsize=9.5, labelpad=8)
-    fig.suptitle("R4 — react fast, or ignore noise: the half-life tradeoff",
+    fig.suptitle("R4 — a shorter memory recovers sooner, and costs nothing measurable here",
                  x=0.055, y=0.975, ha="left", color=INK, fontsize=12.5)
     fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.93))
     fig.savefig(RESULTS / "r4_half_life.png", dpi=200, facecolor=SURFACE)
     plt.close(fig)
 
-    print(f"\nwritten to {RESULTS}/")
+
+def render_from_csv() -> None:
+    with (RESULTS / "r4_half_life_sweep.csv").open() as fh:
+        rows = []
+        for row in csv.DictReader(fh):
+            for key in ("half_life_minutes", "median_onset_minutes", "median_recovery_minutes",
+                        "routing_jitter_clean"):
+                row[key] = float(row[key]) if row[key] else ""
+            rows.append(row)
+    render(rows)
+    print(f"re-rendered {RESULTS}/r4_half_life.png from the saved table")
 
 
 if __name__ == "__main__":
-    main()
+    if "--chart-only" in sys.argv:
+        render_from_csv()
+    else:
+        main()

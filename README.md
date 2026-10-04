@@ -82,7 +82,7 @@ Propensity logging begins at R1 and is enforced by tests from R2 onward.
 | **R1** | Round-robin, uniform-random, and three static-rule baselines | ✅ complete — 53 tests |
 | **R2** | LinUCB contextual bandit, propensities logged | ✅ complete — 40 tests |
 | **R3** | DM / IPS / SNIPS / DR / clipped-IPS vs ground truth | ✅ complete — 31 tests |
-| R4 | Time-decayed per-terminal features; time-to-react | not started |
+| **R4** | Time-decayed per-terminal features; time-to-react | ✅ complete — 23 tests |
 | R5 | Constrained selection under a p95 latency budget | not started |
 | R6 | FastAPI + Redis + Kafka + Postgres service | not started |
 | R7 | Tabular Q-learner for retries | not started |
@@ -263,6 +263,62 @@ contains no information about the actions the target would have taken
 differently, so the value is not identified and any number returned would be
 invented.
 
+## R4 — time-decayed health features
+
+R2 left a problem: LinUCB's `A` and `b` are unweighted sums over all history,
+so a finished outage keeps weighing on the estimate long afterwards. R4 adds
+time-decayed per-gateway health to the context — in the *features*, not in the
+sufficient statistics, because the quality matrix is stationary while health
+moves in minutes, and discounting both would forget the part that never
+changes.
+
+![half-life tradeoff](results/r4_half_life.png)
+
+Median across 12 measured incidents from a sampled schedule:
+
+| policy | median onset | median recovery | jitter (clean) | success |
+|---|---|---|---|---|
+| adaptive hl=2m | 0.7m | **8.2m** | 0.0839 | **94.16%** |
+| adaptive hl=5m | 2.0m | 14.3m | 0.0717 | 94.05% |
+| adaptive hl=0.5m | 1.9m | 20.7m | 0.0703 | 94.04% |
+| adaptive hl=15m | 0.6m | 38.1m | 0.0705 | 93.76% |
+| adaptive hl=60m | 1.9m | 90.5m | 0.0734 | 93.51% |
+| discounted linucb | 0.7m | 115.9m | **0.0945** | 93.34% |
+| static linucb | 1.4m | **148.2m** | 0.0663 | **92.14%** |
+
+**Onset does not discriminate, and that was the number the rung was specified
+around.** Every policy notices a severe outage within about two minutes, and the
+ordering is noise — the unweighted static policy is *faster* than three of the
+five adaptive settings.
+
+**Recovery is where they separate, by 18×.** Static LinUCB takes 148 minutes to
+put traffic back; the best adaptive setting takes 8.2. Noticing a problem is
+easy. Letting go of it is the hard part, and we specified the rung around the
+easy half.
+
+**The tradeoff we designed the rung around does not appear.** Jitter on a clean
+run is flat across every half-life from 0.5 to 60 minutes, and the shortest
+memory is not the jumpiest. With ~1,000 transactions per bin and a prior worth
+ten observations, health barely moves whatever the half-life. The mechanism does
+exist — a quarter-minute half-life is measurably jumpier, asserted in
+`tests/r4` — it is simply too small to matter at any setting one would pick.
+So the honest recommendation is a half-life of 2–5 minutes chosen for recovery
+time alone, noting that 0.5–15 minutes performs comparably. We did not weaken
+the prior or raise the drift until the curve bent the way the design predicted.
+
+**The control agrees with the reasoning that chose the design.** `discounted
+linucb` — decay in the sufficient statistics rather than the features — lands
+between static and adaptive on success *and* has the highest jitter of anything
+measured, which is what the two-timescale argument predicts: it forgets the
+stationary issuer structure at the same rate as the health signal.
+
+Raw data: [`results/r4_half_life_sweep.csv`](results/r4_half_life_sweep.csv).
+Note that this table uses a deliberately dense incident schedule (5 per gateway
+per day, against the default 1) so that a median rests on 12 incidents rather
+than 4. That is a change to the measuring instrument, not to the world the
+policies are judged in — but it degrades the world overall, so the success and
+revenue columns here are **not** comparable with the other rungs' tables.
+
 ---
 
 ## When this OPE result should NOT be trusted
@@ -313,11 +369,12 @@ Raw data: [`results/r3_ope.csv`](results/r3_ope.csv).
 python3 -m venv .venv
 ./.venv/bin/pip install -e . pytest matplotlib
 
-./.venv/bin/python -m pytest -q                        # 163 tests
+./.venv/bin/python -m pytest -q                        # 192 tests
 ./.venv/bin/python experiments/r0_simulator_profile.py # simulator charts
 ./.venv/bin/python experiments/r1_baselines.py         # baseline table
 ./.venv/bin/python experiments/r2_linucb.py            # LinUCB + regret curve
 ./.venv/bin/python experiments/r3_ope.py               # estimator comparison
+./.venv/bin/python experiments/r4_time_to_react.py     # half-life sweep
 ```
 
 ## Layout

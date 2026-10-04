@@ -735,3 +735,83 @@ Why:          With only the first axis, "shorter half-life is better"
               this cost is real rather than theoretical — in a world
               without noise, any half-life would look good.
 Rung:         R4
+
+### Finding: onset does not discriminate; recovery does   2026-10-04 — R4
+
+Decision:     Report recovery time as R4's headline number, and report
+              that onset — the quantity the rung was specified around —
+              turned out not to separate the policies at all.
+Alternatives: Leading with onset because that is what "time to react"
+              normally means, and burying the recovery column.
+Why:          Across 12 measured incidents, median ONSET is
+              1.9 / 0.7 / 2.0 / 0.6 / 1.9 minutes for half-lives of
+              0.5 / 2 / 5 / 15 / 60, with static LinUCB at 1.4 and
+              discounted at 0.7. That is noise: there is no ordering, and
+              the unweighted static policy is faster than three of the
+              five adaptive settings. Every policy notices a severe
+              outage within about two minutes, so onset has nothing to
+              distinguish.
+              Median RECOVERY is where they separate, and it separates
+              hard:
+                hl=2m       8.2 min
+                hl=5m      14.3 min
+                hl=0.5m    20.7 min
+                hl=15m     38.1 min
+                hl=60m     90.5 min
+                discounted 115.9 min
+                static    148.2 min
+              Static LinUCB takes 18x longer than the best adaptive
+              setting to put traffic back. That is the R2 observation —
+              unweighted sums cannot let go of a finished outage —
+              measured directly.
+              Noticing a problem is easy; forgetting it is the hard part,
+              and the rung was specified around the easy half.
+Rung:         R4
+
+### Finding: the half-life tradeoff does not appear here   2026-10-04 — R4
+
+Decision:     Report that the expected cost of a short memory is absent
+              at every half-life tested, rather than tuning until it
+              appears.
+Alternatives: Weakening the prior, lowering traffic volume or raising
+              drift until the curve bends the way the design predicted.
+Why:          Routing jitter on a clean run is
+              0.0703 / 0.0839 / 0.0717 / 0.0705 / 0.0734 across
+              half-lives from 0.5 to 60 minutes — no trend, and the
+              shortest memory is not the jumpiest. With roughly a
+              thousand transactions per bin and a prior worth ten
+              observations, health barely moves whatever the half-life.
+              The mechanism does exist: a quarter-minute half-life is
+              measurably jumpier than sixty minutes, which is asserted in
+              tests/r4. It is simply too small to matter at any setting
+              anyone would choose for this traffic volume.
+              So R4's result is one-sided — real benefit, no measurable
+              cost — which is a weaker and more defensible claim than
+              naming an optimal half-life. Changing the world until the
+              tradeoff showed up would have been fitting the experiment
+              to the design.
+              It also means the honest recommendation is a half-life in
+              the 2-5 minute range chosen for recovery time alone, with
+              the note that anything from 0.5 to 15 minutes performs
+              comparably.
+Rung:         R4
+
+### Finding: features beat discounting, as the two-timescale argument predicted   2026-10-04 — R4
+
+Decision:     Keep decay in the features. The control confirms the
+              reasoning that chose it.
+Alternatives: Switching to discounted LinUCB, which is one line and
+              needs no health store.
+Why:          Under a dense incident schedule, success rate runs
+              adaptive 93.5-94.2% > discounted 93.3% > static 92.1%, and
+              discounted LinUCB has the HIGHEST routing jitter of
+              anything measured (0.0945 against 0.0663-0.0839). Both are
+              what the two-timescale argument predicts: discounting the
+              sufficient statistics forgets the stationary issuer
+              structure at the same rate as the health signal, so it pays
+              for adaptivity with a permanently noisier estimate of the
+              part that never changes.
+              The argument was made before the measurement, and the
+              measurement agrees with it. That is worth more than either
+              on its own.
+Rung:         R4
