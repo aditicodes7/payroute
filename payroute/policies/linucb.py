@@ -100,8 +100,13 @@ class LinUCB:
             for name in self.gateways
         }
 
+    def context_for(self, txn: Transaction) -> dict:
+        """The one place that decides what this policy sees. R4's adaptive
+        variant overrides it to add decayed health, and nothing else changes."""
+        return context_of(txn)
+
     def scores_for(self, txn: Transaction) -> dict[str, float]:
-        return self.scores(context_of(txn))
+        return self.scores(self.context_for(txn))
 
     def greedy_action(self, context: Mapping) -> str:
         scores = self.scores(context)
@@ -116,7 +121,7 @@ class LinUCB:
         return {name: share + (1.0 - self.epsilon if name == greedy else 0.0) for name in self.gateways}
 
     def decide(self, txn: Transaction) -> Decision:
-        context = context_of(txn)
+        context = self.context_for(txn)
         probs = self.action_probs(context)
 
         if self.epsilon > 0.0 and self._rng.random() < self.epsilon:

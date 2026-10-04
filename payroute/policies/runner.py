@@ -47,7 +47,10 @@ def run_policy(sim: Simulator, policy, n: int, reward_fn=default_reward) -> Deci
     for txn in sim.transactions(n):
         decision = policy.decide(txn)
         outcome = sim.resolve(txn, decision.action)
-        context = context_of(txn)
+        # A policy may build a richer context than the static one — R4's health
+        # features. Whatever it used to decide is what gets snapshotted into
+        # the log, so the record always reflects what the policy actually saw.
+        context = policy.context_for(txn) if hasattr(policy, "context_for") else context_of(txn)
         log.append(
             DecisionRecord(
                 txn_id=txn.txn_id,
@@ -65,4 +68,9 @@ def run_policy(sim: Simulator, policy, n: int, reward_fn=default_reward) -> Deci
         # `update`, which is what makes them baselines.
         if hasattr(policy, "update"):
             policy.update(context, decision.action, reward_fn(txn, outcome))
+        # Outcome feedback for policies that keep state outside the model —
+        # deliberately after the context snapshot above, so a decision can
+        # never be scored against its own result.
+        if hasattr(policy, "observe"):
+            policy.observe(txn, decision.action, outcome)
     return log

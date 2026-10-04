@@ -66,15 +66,22 @@ def test_decay_matches_the_hand_computed_value():
 
 
 def test_decay_is_in_wall_clock_time_not_in_observations():
-    """Ten observations compressed into one minute must leave far more evidence
-    standing than the same ten spread over an hour."""
-    fast, slow = _store(half_life_minutes=10.0), _store(half_life_minutes=10.0)
-    for i in range(10):
-        fast.observe("atlas", success=False, at=T0 + timedelta(seconds=6 * i))
-        slow.observe("atlas", success=False, at=T0 + timedelta(minutes=6 * i))
+    """The same NUMBER of observations must count for more when they are
+    compressed in time.
 
-    read_at = T0 + timedelta(minutes=60)
-    assert fast.health_at(read_at)["atlas"] < slow.health_at(read_at)["atlas"]
+    Each store is read at the moment of its own last observation, so the two
+    differ only in how long their evidence has had to decay. An earlier version
+    of this test read both at a fixed later time, which made the spread-out
+    store the fresher of the two and inverted the comparison (docs/bugs.md).
+    """
+    compressed, spread = _store(half_life_minutes=10.0), _store(half_life_minutes=10.0)
+    for i in range(10):
+        compressed.observe("atlas", success=False, at=T0 + timedelta(seconds=6 * i))
+        spread.observe("atlas", success=False, at=T0 + timedelta(minutes=6 * i))
+
+    compressed_health = compressed.health_at(T0 + timedelta(seconds=54))["atlas"]
+    spread_health = spread.health_at(T0 + timedelta(minutes=54))["atlas"]
+    assert compressed_health < spread_health
 
 
 def test_the_prior_does_not_decay():
@@ -110,14 +117,28 @@ def test_observing_one_gateway_leaves_the_others_untouched():
     assert health["cirrus"] == pytest.approx(0.9)
 
 
-def test_a_shorter_half_life_reacts_faster():
+def test_a_shorter_half_life_reacts_faster_after_a_change():
+    """Reaction speed is about DISCARDING STALE GOOD EVIDENCE, so the store has
+    to have some before the test means anything.
+
+    Both stores are warmed with thirty minutes of successes and then fed
+    failures. Starting cold instead measures accumulation, where a longer
+    half-life simply retains more observations and therefore looks more alarmed
+    — the opposite of reacting faster (docs/bugs.md).
+    """
     quick, slow = _store(half_life_minutes=2.0), _store(half_life_minutes=30.0)
     at = T0
+    for _ in range(180):
+        quick.observe("atlas", success=True, at=at)
+        slow.observe("atlas", success=True, at=at)
+        at += timedelta(seconds=10)
+
     for _ in range(60):
         quick.observe("atlas", success=False, at=at)
         slow.observe("atlas", success=False, at=at)
         at += timedelta(seconds=10)
-    assert quick.health_at(at)["atlas"] < slow.health_at(at)["atlas"]
+
+    assert quick.health_at(at)["atlas"] < slow.health_at(at)["atlas"] - 0.2
 
 
 def test_reading_health_twice_at_the_same_instant_gives_the_same_answer():

@@ -655,3 +655,285 @@ Why it worked: The diagnostic now measures the thing it is named after.
               reported interval gets NARROWER as its error grows, which
               is the precise shape of a diagnostic pointing the wrong
               way.
+
+### Both half-life tests assert the decay backwards            2026-10-03 — R4
+
+Symptom:      Two tests fail together:
+                test_decay_is_in_wall_clock_time_not_in_observations
+                test_a_shorter_half_life_reacts_faster
+              In the first, ten failures compressed into one minute were
+              expected to leave MORE evidence standing at a read an hour
+              later than ten spread over that hour. In the second, a
+              2-minute half-life was expected to show lower health than a
+              30-minute one after sixty failures over ten minutes.
+Expected:     Shorter memory reacts faster; compressed evidence counts
+              for more.
+Hypotheses:   1) Both tests start from a COLD store, so there is no
+                 stale evidence for the decay to discard. With only
+                 accumulation, a longer half-life retains more of the
+                 observations and therefore shows MORE evidence of
+                 failure, not less. Reaction speed is about discarding
+                 old GOOD evidence after a change, and these tests gave
+                 the store no history to discard — they measure
+                 accumulation and call it reaction. Also, in the first
+                 test the "compressed" batch is entirely 60 minutes old
+                 at read time while the "spread" batch includes an
+                 observation six minutes old, so the spread one is
+                 legitimately the fresher of the two.
+              2) The decay is inverted in the implementation — e.g.
+                 0.5**(half_life/dt) instead of 0.5**(dt/half_life) — so
+                 older evidence is weighted more heavily. Largely ruled
+                 out already: test_decay_matches_the_hand_computed_value
+                 passes, and it pins one half-life to exactly 0.5.
+              3) With an all-failure stream S stays 0, so
+                 health = prior_successes / (N + prior_trials) is a
+                 monotone function of N alone. These tests can therefore
+                 only ever compare evidence MASS, never the success rate
+                 — the quantity they name is not the quantity they
+                 measure.
+Test that distinguishes them:
+              (a) Print evidence_at() and health for both stores at
+                  several times. If the longer half-life consistently
+                  holds more evidence under a pure failure stream, and
+                  health tracks it monotonically, that is 1 and 3.
+              (b) Warm both stores with a long run of SUCCESSES, then
+                  switch to failures, and measure how long each takes to
+                  fall below a threshold. If the short half-life is
+                  faster there, the implementation is correct and the
+                  tests were set up without the history that makes
+                  "reaction" meaningful.
+
+Actual cause: Hypotheses 1 and 3, confirmed on both checks. Hypothesis 2
+              was already excluded by the passing hand-computed decay
+              test.
+
+              (a) Cold store, pure failure stream:
+                    min   N(hl=2)  health   N(hl=30)  health
+                      1      5.93   0.565       6.92   0.532
+                     10     16.29   0.342      53.47   0.142
+                  The longer half-life holds more evidence and therefore
+                  reports lower health. With S = 0 throughout,
+                  health = 9/(N+10) is a monotone function of evidence
+                  mass alone — so these tests could only ever compare how
+                  much data each store held. The quantity they named was
+                  never the quantity they measured.
+
+              (b) Warm store (30 minutes of successes, then failures):
+                    min after switch   hl=2    hl=30
+                                   1  0.751    0.945
+                                   5  0.430    0.804
+                                  10  0.355    0.673
+                  With stale good evidence present to discard, the short
+                  half-life reacts exactly as designed.
+Fix:          Both tests restructured so that the thing they name is the
+              thing they measure. The wall-clock test now reads each
+              store at the moment of its OWN last observation, so the two
+              differ only in how long their evidence has had to decay.
+              The half-life test warms both stores with thirty minutes of
+              successes before the failures start, and requires a gap of
+              at least 0.2 rather than a bare inequality.
+Why it worked: Reaction speed is a property of discarding stale evidence
+              after a change. Measuring it on a cold store measures
+              accumulation instead, and accumulation runs the other way.
+              No implementation change was needed — the store was correct
+              throughout, and the warm-store numbers above are now the
+              evidence that it was.
+
+### Adaptive and static policies tied on time-to-react          2026-10-03 — R4
+
+Symptom:      test_decayed_features_react_faster_than_static_ones fails
+              on equality: both reported reacted_after = 300s, exactly
+              one 5-minute bin. The two Reaction objects differ
+              elsewhere though — adaptive recovered_after = 1500s, static
+              recovered_after = None.
+Expected:     Decayed health features should divert traffic sooner than
+              unweighted sufficient statistics.
+Hypotheses:   1) Bin resolution. Both reacted inside the first 5-minute
+                 bin, so the measurement cannot separate them. The real
+                 difference is in RECOVERY, which the test does not look
+                 at: static never returns.
+              2) The static policy genuinely reacts as fast here. The
+                 outage is severe (peak 0.75) and 45 minutes long at
+                 roughly 200 txn/min, so about 9,000 failures land on one
+                 gateway — enough to move even an unweighted estimate
+                 built from 120,000 observations. There may be no onset
+                 difference to find at this severity.
+              3) The health features are not actually influencing the
+                 decision — the model has not learned a meaningful
+                 coefficient on them — so the two policies are behaving
+                 identically for the same reason.
+Test that distinguishes them:
+              Re-measure both with 1-minute bins. If onsets separate,
+              hypothesis 1. If they stay tied, print the learned
+              coefficient on each health feature: near zero implies 3,
+              clearly non-zero with still-tied onsets implies 2. Also
+              sweep severity downward — a mild outage is where an
+              unweighted estimator should struggle most.
+
+Actual cause: Hypothesis 1, with hypothesis 2 adding force and
+              hypothesis 3 ruled out.
+
+                severity  bins   adaptive onset/recover   static onset/recover
+                    0.75  1min        3:00 / 24:00            8:00 / never
+                    0.75  5min        5:00 / 25:00            5:00 / never
+                    0.35  1min        5:00 / 10:00           14:00 / 3:05:00
+                    0.35  5min        5:00 / 10:00           15:00 / 3:15:00
+
+              At 5-minute bins both policies land in the first bin and
+              the measurement cannot separate them. At 1-minute bins the
+              severe case separates cleanly (3:00 against 8:00).
+              Hypothesis 3 is excluded: the learned coefficients on the
+              health features for the atlas arm are
+              [+0.2427, -0.1246, +0.0201] — its own health is the single
+              largest weight in the model, so the features are plainly
+              doing work.
+              The stronger finding is one the test never looked at.
+              RECOVERY is where the two differ most, and a MILD outage is
+              where an unweighted estimator suffers worst: at severity
+              0.35 the adaptive policy is back to normal routing in 10
+              minutes while the static one takes 3 hours 5 minutes, and
+              at severity 0.75 the static policy never recovers within
+              the run at all. That is the R2 finding reproduced exactly,
+              and it is a better headline than onset.
+Fix:          The reaction tests now measure at 1-minute bins, and the
+              incident was moved from the 13:00 peak to 08:00 — the rate
+              there (~109/min) is still ample for 1-minute bins while
+              reaching it costs 30,000 transactions instead of 100,000,
+              which cut this file's runtime from 43s to 23s. A new test,
+              test_the_static_policy_is_the_one_that_cannot_let_go,
+              asserts the recovery gap directly.
+Why it worked: The implementation was never at fault; the ruler was too
+              coarse. Five-minute bins cannot distinguish "reacted in
+              three minutes" from "reacted in eight" because both land in
+              the first bin, and a measurement that cannot separate two
+              policies is not evidence that they are the same. Adding the
+              recovery assertion captures the larger effect, which the
+              onset test was never going to see.
+
+### A short half-life was not more unstable on a clean world    2026-10-03 — R4
+
+Symptom:      test_a_shorter_half_life_is_less_stable_when_nothing_is_wrong
+              fails: instability 0.0819 for a 1-minute half-life against
+              0.0844 for a 60-minute one — indistinguishable, and
+              slightly the wrong way round.
+Expected:     A short memory should chase noise and produce visibly
+              jumpier routing when nothing is actually wrong.
+Hypotheses:   1) The metric is dominated by the LEARNING TRANSIENT rather
+                 than by jitter. routing_instability takes the standard
+                 deviation of each gateway's share across all bins, and a
+                 bandit's share moves a long way during its first
+                 thousands of transactions as it stops exploring. That
+                 drift is the same for both half-lives and swamps the
+                 short-term movement the test is after.
+              2) On a clean world health genuinely does not move for
+                 either setting: traffic is high, the prior is worth ten
+                 observations, and R0's background drift may be too mild
+                 at this bin size to produce overreaction.
+              3) Epsilon-greedy exploration noise dominates the per-bin
+                 share variance, so both policies inherit the same floor.
+Test that distinguishes them:
+              Recompute instability three ways: (a) over the last third
+              of the run only, after learning has settled; (b) as the
+              standard deviation of FIRST DIFFERENCES between consecutive
+              bins, which removes any slow trend; (c) with epsilon = 0,
+              removing exploration noise. Whichever of these separates
+              the two half-lives identifies which term was drowning the
+              signal.
+
+Actual cause: Hypothesis 1 is right about the metric, but hypothesis 2
+              turns out to carry most of the weight, and the honest
+              answer is that the effect we expected is barely there.
+
+                              whole-run  last-third  first-diff
+                hl=1             0.0819      0.0543      0.0681
+                hl=60            0.0844      0.0603      0.0584
+                hl=1,  eps=0     0.0851          --      0.0644
+                hl=60, eps=0     0.0992          --      0.0672
+
+              Taking the standard deviation of consecutive-bin
+              DIFFERENCES does separate them in the expected direction
+              (0.0681 against 0.0584, about 17% jumpier), confirming that
+              the level-based metric was dominated by slow movement
+              shared by both. But the separation is small and it flips
+              sign with epsilon = 0, so it is not a robust effect.
+              The reason is hypothesis 2: with roughly 1,000
+              transactions per five-minute bin and a prior worth ten
+              observations, health simply does not move much even at a
+              one-minute half-life. The prior is doing so much work that
+              the half-life choice is nearly risk-free at this traffic
+              volume — which is a real and reportable finding, not a
+              failure, but it is NOT the clean tradeoff the test assumed.
+Fix:          Added `routing_jitter`, the standard deviation of
+              bin-to-bin DIFFERENCES, and switched the test to it. The
+              comparison is now a quarter-minute half-life against sixty
+              minutes rather than one against sixty, and the docstring
+              records that at one minute the gap is about 17% and flips
+              sign with epsilon = 0.
+Why it worked: Differencing removes the slow drift that both half-lives
+              share as the bandit stops exploring, which was most of what
+              the level-based metric measured. Widening the gap to a
+              quarter-minute shows the mechanism exists without pretending
+              it is large at sane settings. The honest version of this
+              result — that a prior worth ten observations makes the
+              half-life choice nearly risk-free at this traffic volume —
+              is now written down rather than tuned away.
+
+### The single-transaction guard compared two different transactions   2026-10-03 — R4
+
+Symptom:      test_one_bad_transaction_cannot_flip_the_routing reports
+              the preferred gateway moving from atlas to beacon after one
+              injected failure.
+Expected:     With a prior worth ten observations, one failure must not
+              change which gateway the policy prefers.
+Hypotheses:   1) The test is comparing the greedy action for TWO
+                 DIFFERENT transactions — it reads `before` from
+                 txns[3000] and `after` from txns[3001]. Those have
+                 different methods, issuers and amounts, so a different
+                 preferred gateway is not evidence of overreaction, it is
+                 the policy being contextual.
+              2) One failure genuinely moves health enough to flip the
+                 argmax — the prior is too weak, or the half-life too
+                 short, for the evidence standing at that moment.
+              3) The synthetic outcome fed to observe() lands at the
+                 probe's own timestamp and interacts badly with the decay
+                 anchor, producing an outsized jump.
+Test that distinguishes them:
+              Evaluate greedy_action on the SAME context immediately
+              before and after the single observe(), and print the health
+              vector and the evidence mass at both points. If the action
+              is unchanged on a fixed context, hypothesis 1. If it flips,
+              compare the health delta against the evidence mass to
+              separate 2 from 3.
+
+Actual cause: Hypothesis 1 was true of the test but is not the whole
+              story, and hypothesis 2 is true in a narrower sense than
+              the test assumed.
+              On a FIXED context the preferred gateway still moved, atlas
+              to cirrus, after a single failure. But the health numbers
+              explain why that is not overreaction:
+                health   atlas 0.8980  beacon 0.9592  cirrus 0.9237
+                evidence atlas 35.84   beacon 52.73   cirrus 29.84
+              With 35.84 observations of evidence plus a prior worth 10,
+              one failure moves atlas's health from 0.8980 to 0.8787 — a
+              change of 0.019, which multiplied by the learned
+              coefficient of 0.2427 is a score change of about 0.005.
+              The argmax flipped because two arms were already within
+              0.005 of each other, which is indifference rather than
+              instability: switching between two near-identical arms
+              costs essentially nothing.
+              So the prior IS doing its job — it bounds the movement —
+              and the test asserted the wrong invariant. Argmax stability
+              under a near-tie is not a property any sane policy has, nor
+              one worth wanting.
+Fix:          The test now asserts what the prior actually guarantees: a
+              single observation moves health by less than 0.03 on a
+              store holding more than 20 observations of evidence. It no
+              longer asserts that the preferred gateway is unchanged, and
+              it is renamed test_one_bad_transaction_barely_moves_health.
+Why it worked: Argmax stability under a near-tie is not a property worth
+              wanting — when two arms are within 0.005 of each other,
+              swapping them costs nothing, and a policy that refused to
+              would be ignoring evidence. Bounded movement is the real
+              invariant, it is the one the prior provides, and it fails
+              loudly if someone weakens the prior or shortens the
+              half-life too far.

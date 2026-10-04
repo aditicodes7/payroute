@@ -29,12 +29,16 @@ class Featuriser:
         categories: Sequence[str],
         amount_log_mean: float,
         amount_log_std: float,
+        health_gateways: Sequence[str] = (),
     ):
         self.methods = list(methods)
         self.issuers = list(issuers)
         self.categories = list(categories)
         self.amount_log_mean = amount_log_mean
         self.amount_log_std = amount_log_std
+        # Empty by default: R2 is static context only, so that R4's addition of
+        # health signals is a measurable delta rather than a confound.
+        self.health_gateways = list(health_gateways)
 
         self._method_index = {name: i for i, name in enumerate(self.methods)}
         self._issuer_index = {name: i for i, name in enumerate(self.issuers)}
@@ -45,13 +49,14 @@ class Featuriser:
             + [f"issuer={i}" for i in self.issuers]
             + [f"category={c}" for c in self.categories]
             + ["log_amount_z", "hour_sin", "hour_cos", "bias"]
+            + [f"health={g}" for g in self.health_gateways]
         )
         self.dim = len(self.names)
 
         self._amount_at = len(self.methods) + len(self.issuers) + len(self.categories)
 
     @classmethod
-    def from_config(cls, config: SimulatorConfig) -> "Featuriser":
+    def from_config(cls, config: SimulatorConfig, health_gateways: Sequence[str] = ()) -> "Featuriser":
         """Derive the amount scaling analytically from the configured mixture.
 
         Unscaled, log-amount ranges over roughly +/-8 while every one-hot is 0
@@ -72,6 +77,7 @@ class Featuriser:
             categories=list(config.merchant_category_mix),
             amount_log_mean=mean,
             amount_log_std=math.sqrt(variance),
+            health_gateways=health_gateways,
         )
 
     def transform(self, context: Mapping) -> np.ndarray:
@@ -96,4 +102,7 @@ class Featuriser:
         x[i + 1] = math.sin(angle)
         x[i + 2] = math.cos(angle)
         x[i + 3] = 1.0
+
+        for offset, gateway in enumerate(self.health_gateways, start=i + 4):
+            x[offset] = context[f"health_{gateway}"]
         return x
