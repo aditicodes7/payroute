@@ -983,3 +983,101 @@ Why:          Paired against R4's success-oriented policy on identical
               the policy is nowhere near the achievable optimum, and the
               headline improvement should be read next to that.
 Rung:         R5
+
+### Kafka is the system of record; Postgres is a projection   2026-10-05 — R6
+
+Decision:     The decision endpoint produces the decision record to Kafka
+              inside the request. A consumer writes it to Postgres.
+              Outcomes arrive on a second topic and are consumed into both
+              Redis (health state) and Postgres (outcome rows).
+Alternatives: (a) Insert into Postgres synchronously in the request.
+              (b) Fire-and-forget the Postgres write.
+Why:          (a) blows the 30ms budget and makes routing unavailable
+              whenever the LOG is unavailable, which is a strange thing
+              to couple. (b) loses records silently, which for a
+              propensity is fatal and undetectable.
+              Producing to an ordered durable log is fast enough (~1ms at
+              acks=1) and gives the property that matters for R6's
+              predicted bug: Redis and Postgres become two projections of
+              the SAME ordered stream, each with its own offset. They can
+              be behind one another; they cannot be inconsistent, because
+              they replay identical events in identical order. Divergence
+              becomes lag, which is a number you can watch.
+Rung:         R6
+
+### Routing availability is deliberately coupled to logging   2026-10-05 — R6
+
+Decision:     Decisions are written through a bounded write-ahead buffer.
+              Transient sink unavailability is absorbed; when the buffer
+              fills, the endpoint returns 503 and stops routing.
+Alternatives: (a) Return the decision anyway and accept log loss.
+              (b) Fail on the first produce error, with no buffer.
+Why:          (a) creates an unlogged decision — the one thing this whole
+              project forbids — and does it invisibly: the payment
+              succeeds, nobody notices, and R3 finds a hole months later.
+              (b) turns a one-second broker election into an outage.
+              The buffer makes the tradeoff a tunable tolerance ("we will
+              route through N seconds of logging outage") and a visible
+              503 rather than a silent choice.
+              This is an arguable position, not an obviously correct one:
+              a payments company might well prefer to keep routing and
+              lose the log. What matters is that it is chosen, written
+              down, and observable in the metrics rather than defaulted
+              into.
+Rung:         R6
+
+### A blind decision records that it was blind   2026-10-05 — R6
+
+Decision:     If the state store is unavailable the service falls back to
+              the configured priors, keeps routing, and records
+              `health_source = "fallback"` on the decision. A named
+              field, like R5's constraint_status.
+Alternatives: (a) Fail the request. (b) Fall back silently.
+Why:          The acceptance criterion is "doesn't crash, doesn't
+              silently guess", and the second clause is the design. A
+              decision made without health data is a different kind of
+              decision; if it is indistinguishable in the log from an
+              informed one, then R3 pools two populations and every
+              estimate inherits the contamination. With the field, "we
+              served 4% of traffic blind" is a reportable number and
+              those rows can be segmented or excluded.
+Rung:         R6
+
+### No container runtime here: the adapters are unexercised   2026-10-05 — R6
+
+Decision:     Build the Redis, Kafka and Postgres adapters against the
+              real client APIs, test the contracts against in-process
+              fakes, and write the integration suite so it is ready —
+              marked skipped with its reason. State in the README that
+              the reported p50/p95/p99 are measured against FAKES.
+Alternatives: (a) Report the fake-based latency as if it were a
+              deployment measurement. (b) Skip the adapters entirely and
+              ship only the in-memory version.
+Why:          This environment has no Docker, Colima or Podman, so there
+              is nothing to run the dependencies against. A latency
+              regression test against in-process fakes is still worth
+              having — it catches an N+1 read or a serialisation
+              regression in our own code, and a test asserts exactly that
+              one state-store read happens per decision. But it says
+              nothing about Redis round trips or broker acks, and
+              presenting it as a deployment p99 would be the most
+              straightforwardly dishonest thing in the project.
+              The adapters being written but never executed is a real
+              limitation and is recorded as one in three places rather
+              than left to be discovered.
+Rung:         R6
+
+### propensity is NOT NULL in the schema   2026-10-05 — R6
+
+Decision:     The Postgres decision table declares propensity NOT NULL,
+              alongside context and action_probs.
+Alternatives: Relying on the Python dataclass validation already in
+              payroute/decisionlog.
+Why:          The dataclass refuses to construct a record without a
+              propensity, which covers every path through our code. The
+              database constraint covers paths that do not go through our
+              code — a backfill script, a manual insert, a future service
+              written by someone who did not read CLAUDE.md. The
+              invariant is worth stating at the lowest layer that can
+              enforce it.
+Rung:         R6
