@@ -83,7 +83,7 @@ Propensity logging begins at R1 and is enforced by tests from R2 onward.
 | **R2** | LinUCB contextual bandit, propensities logged | ✅ complete — 40 tests |
 | **R3** | DM / IPS / SNIPS / DR / clipped-IPS vs ground truth | ✅ complete — 31 tests |
 | **R4** | Time-decayed per-terminal features; time-to-react | ✅ complete — 23 tests |
-| R5 | Constrained selection under a p95 latency budget | not started |
+| **R5** | Constrained selection under a p95 latency budget | ✅ complete — 26 tests |
 | R6 | FastAPI + Redis + Kafka + Postgres service | not started |
 | R7 | Tabular Q-learner for retries | not started |
 
@@ -319,6 +319,55 @@ than 4. That is a change to the measuring instrument, not to the world the
 policies are judged in — but it degrades the world overall, so the success and
 revenue columns here are **not** comparable with the other rungs' tables.
 
+## R5 — constrained selection
+
+Maximise `p(x,g) · (value(x) − fee(x,g))` subject to a p95 latency budget. Note
+the parentheses: R0 charges the gateway fee on success only, so the fee sits
+inside the probability-weighted term — not `p·value − fee`. The two differ by
+`(1−p)·fee`, about 5% of margin, biased toward reliable gateways.
+
+40,000 transactions, both policies on the identical stream:
+
+| policy | success | net revenue / 1k | realised p95 | constraint held |
+|---|---|---|---|---|
+| **constrained (R5)** | 92.13% | **1,936,826** | **348ms** | 100% |
+| success-oriented (R4) | 94.84% | 1,899,645 | **601ms** | — |
+
+Paired: **−2.71% success** [−2.89, −2.54], **+37,182 net revenue per 1,000**
+[+29,147, +45,217].
+
+The constrained policy deliberately gives up 2.7 points of success rate and
+earns more money, while bringing p95 from 601ms to 348ms against a 420ms
+budget. The unconstrained policy's 601ms would have **violated** that budget —
+so the constraint is doing real work, not decorating a policy that satisfied it
+anyway.
+
+### At what fee spread does reliability stop being the right objective?
+
+![fee spread](results/r5_fee_spread.png)
+
+It never was. Even at **zero** basis-point spread the revenue-optimal gateway
+differs from the most reliable one on 17.8% of transactions, because cirrus
+carries a 100-paise flat fee that no rate equality can cancel. The disagreement
+rate saturates near 75% while the revenue gap keeps growing — past a point the
+question stops being *which* transactions are misrouted and becomes *how much*
+each misrouting costs.
+
+At our configured spread, routing for success rate alone leaves **250,474 paise
+per 1,000 transactions** on the table — about 13% of net revenue — measured
+against the oracle's true probabilities with no policy involved.
+
+**And we captured 37,182 of it, roughly 15%.** The two figures aren't strictly
+comparable (the oracle's is unconstrained and uses true rather than learned
+probabilities, and the latency constraint itself costs revenue), but the order
+of magnitude is the point: this policy is nowhere near the achievable optimum,
+and the headline improvement should be read next to that.
+
+This is the open item from R1, closed by measuring the problem rather than
+retuning the world after four rungs of results.
+
+Raw data: [`results/r5_fee_spread.csv`](results/r5_fee_spread.csv).
+
 ---
 
 ## When this OPE result should NOT be trusted
@@ -369,12 +418,13 @@ Raw data: [`results/r3_ope.csv`](results/r3_ope.csv).
 python3 -m venv .venv
 ./.venv/bin/pip install -e . pytest matplotlib
 
-./.venv/bin/python -m pytest -q                        # 192 tests
+./.venv/bin/python -m pytest -q                        # 218 tests
 ./.venv/bin/python experiments/r0_simulator_profile.py # simulator charts
 ./.venv/bin/python experiments/r1_baselines.py         # baseline table
 ./.venv/bin/python experiments/r2_linucb.py            # LinUCB + regret curve
 ./.venv/bin/python experiments/r3_ope.py               # estimator comparison
 ./.venv/bin/python experiments/r4_time_to_react.py     # half-life sweep
+./.venv/bin/python experiments/r5_constrained.py       # constrained selection
 ```
 
 ## Layout

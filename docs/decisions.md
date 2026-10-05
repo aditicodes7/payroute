@@ -931,3 +931,55 @@ Why:          Margin per successful transaction is 130/110/90 bps across
               costs one loop, rewrites no history, and is a better
               artifact than a retuned world would have been.
 Rung:         R5 (closes the R1 open item)
+
+### Finding: routing for success rate is never revenue-optimal here   2026-10-05 — R5
+
+Decision:     Report that the question the fee-spread sweep was built to
+              answer has no crossing point, rather than forcing one.
+Alternatives: Presenting a "break-even spread" by picking a threshold.
+Why:          The sweep asked at what fee spread reliability stops being
+              the right objective. The answer is that it never was:
+
+                spread   fee bps        money disagrees   gap/1k
+                  0.00   90/90/90                 17.8%   14,380
+                  0.50   90/100/80                44.7%   74,708
+                  1.00   90/110/70 (ours)         68.3%  250,474
+                  2.00   90/130/50                74.9%  635,964
+
+              Even at ZERO basis-point spread the two objectives disagree
+              on 17.8% of transactions, because cirrus carries a
+              100-paise flat fee that no rate equality can cancel. The
+              disagreement rate saturates around 75% while the revenue
+              gap keeps growing roughly linearly — so past a point the
+              question stops being WHICH transactions are misrouted and
+              becomes HOW MUCH each misrouting costs.
+              At our configured spread, success-rate-optimal routing
+              leaves 250,474 paise per 1,000 transactions on the table —
+              about 13% of total net revenue — measured against the
+              oracle's true probabilities with no policy involved. That
+              is the size of the problem R5 exists to address, stated
+              independently of how well our solution addresses it.
+Rung:         R5 (closes the R1 fee-spread open item)
+
+### Finding: the constrained policy captures a small share of the available gap   2026-10-05 — R5
+
+Decision:     Report the shortfall rather than only the win.
+Alternatives: Reporting the paired +37,182 improvement on its own.
+Why:          Paired against R4's success-oriented policy on identical
+              transactions, the constrained policy gives up 2.71 points
+              of success rate [-2.89, -2.54] and earns 37,182 more paise
+              per 1,000 [+29,147, +45,217], while bringing realised p95
+              from 601ms to 348ms against a 420ms budget. The constraint
+              held on 100% of decisions, and the unconstrained policy's
+              601ms would have VIOLATED the budget — so the constraint is
+              doing real work, not decorating a policy that satisfied it
+              anyway.
+              But the oracle says 250,474 paise per 1,000 is available
+              from revenue-aware routing, and we captured 37,182 — about
+              15%. The two numbers are not strictly comparable (the
+              oracle figure is unconstrained and uses true probabilities
+              rather than learned ones, and the latency constraint itself
+              costs revenue), but the order of magnitude is the point:
+              the policy is nowhere near the achievable optimum, and the
+              headline improvement should be read next to that.
+Rung:         R5
