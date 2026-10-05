@@ -35,9 +35,11 @@ from typing import Callable, Iterator, Sequence
 import numpy as np
 
 from payroute.sim.config import SimulatorConfig
+from payroute.sim.failures import RETRY_SUCCESS_MULTIPLIER, choose_reason
 from payroute.sim.incidents import GatewayIncident, IssuerIncident, _Incident
 
 _BLOCK = 8192  # transactions generated per vectorised batch
+_MAX_RETRIES = 2  # attempts beyond the first that get their own draw
 
 
 @dataclass(frozen=True)
@@ -59,6 +61,11 @@ class Transaction:
     merchant_category: str
     _u: float = field(repr=False, compare=True)
     _latency_z: tuple[float, ...] = field(repr=False, compare=True)
+    # Drawn from a separate stream added for R7, so the context, outcome and
+    # drift streams are byte-identical to what they were before failure reasons
+    # existed. tests/r7/test_failure_reasons.py pins that with a fingerprint.
+    _reason_u: float = field(default=0.0, repr=False, compare=True)
+    _retry_u: tuple[float, ...] = field(default=(), repr=False, compare=True)
 
     def as_dict(self) -> dict:
         return {
@@ -78,6 +85,7 @@ class Outcome:
     latency_ms: float
     fee_paise: int
     net_revenue_paise: int
+    failure_reason: str | None = None
 
 
 class Oracle:
@@ -138,10 +146,13 @@ class Simulator:
         # Independent streams. Spawning from one SeedSequence keeps the whole
         # run reproducible from a single integer while guaranteeing the streams
         # do not overlap.
-        ctx_seed, outcome_seed, drift_seed = np.random.SeedSequence(seed).spawn(3)
+        # spawn(4) leaves the first three children identical to spawn(3): the
+        # retry stream is additive and shifts nothing.
+        ctx_seed, outcome_seed, drift_seed, retry_seed = np.random.SeedSequence(seed).spawn(4)
         self._ctx_rng = np.random.default_rng(ctx_seed)
         self._outcome_rng = np.random.default_rng(outcome_seed)
         self._drift_rng = np.random.default_rng(drift_seed)
+        self._retry_rng = np.random.default_rng(retry_seed)
 
         self._gateways = list(config.gateways)
         self._names = [g.name for g in self._gateways]
@@ -239,6 +250,9 @@ class Simulator:
         u_success = self._outcome_rng.random(n)
         z_latency = self._outcome_rng.standard_normal((n, k))
 
+        u_reason = self._retry_rng.random(n)
+        u_retry = self._retry_rng.random((n, _MAX_RETRIES))
+
         # Non-homogeneous Poisson arrivals. The rate is re-evaluated per
         # transaction; it varies on an hourly scale while gaps are seconds, so
         # holding it fixed between draws is a negligible approximation.
@@ -263,6 +277,8 @@ class Simulator:
         times_list = times.tolist()
         u_list = u_success.tolist()
         z_list = z_latency.tolist()
+        reason_list = u_reason.tolist()
+        retry_list = u_retry.tolist()
 
         # The seed is part of the id, not decoration: without it two different
         # runs both start at txn-000000000 and any code that joins or pairs
@@ -279,6 +295,8 @@ class Simulator:
                 merchant_category=categories[i],
                 _u=u_list[i],
                 _latency_z=tuple(z_list[i]),
+                _reason_u=reason_list[i],
+                _retry_u=tuple(retry_list[i]),
             )
             for i in range(n)
         ]
@@ -325,6 +343,21 @@ class Simulator:
 
         return p * (1.0 - severity) * (1.0 - issuer_severity)
 
+    def _severities(self, txn: Transaction, gateway: str) -> tuple[float, float]:
+        """(gateway-incident severity, issuer-incident severity) for this
+        transaction. Separate rather than combined, because which one is biting
+        is exactly what the failure reason has to convey."""
+        g = self.config.gateway(gateway)
+        gateway_severity = 0.0
+        for incident in self._gateway_incidents.get(gateway, ()):
+            gateway_severity = max(gateway_severity, incident.severity_at(txn.ts))
+        issuer_severity = 0.0
+        for incident in self._issuer_incidents.get(txn.issuer, ()):
+            issuer_severity = max(
+                issuer_severity, incident.severity_at(txn.ts) * g.issuer_sensitivity[txn.issuer]
+            )
+        return gateway_severity, issuer_severity
+
     def _degradation(self, txn: Transaction, gateway: str) -> float:
         """Total active severity on this gateway for this transaction, in [0, 1).
         Used to inflate latency: a degrading endpoint gets slower before, and
@@ -344,7 +377,13 @@ class Simulator:
         fee = g.fee.flat_paise + (g.fee.bps * txn.amount_paise) // 10_000
         return int(value), int(fee)
 
-    def resolve(self, txn: Transaction, gateway: str) -> Outcome:
+    def resolve(
+        self,
+        txn: Transaction,
+        gateway: str,
+        attempt: int = 1,
+        previous_reason: str | None = None,
+    ) -> Outcome:
         """Resolve this transaction on this gateway.
 
         Deterministic given the transaction: calling it twice, or calling it for
@@ -355,7 +394,20 @@ class Simulator:
         g = self.config.gateway(gateway)
         idx = self._index[gateway]
 
-        success = txn._u < self._success_prob(txn, gateway)
+        if attempt < 1 or attempt > _MAX_RETRIES + 1:
+            raise ValueError(f"attempt must be between 1 and {_MAX_RETRIES + 1}, got {attempt}")
+
+        probability = self._success_prob(txn, gateway)
+        if previous_reason is not None:
+            # A retry's chance depends on why the last attempt failed. Without
+            # this the reason carries no information and R7 has nothing to learn.
+            probability *= RETRY_SUCCESS_MULTIPLIER[previous_reason]
+
+        # Attempt 1 uses the transaction's shared uniform, which is what keeps
+        # counterfactuals coherent for R0 and R3. Later attempts get their own
+        # draw, or a retry would be a replay of the same outcome.
+        u = txn._u if attempt == 1 else txn._retry_u[attempt - 2]
+        success = u < probability
 
         latency = g.latency.median_ms * math.exp(g.latency.log_sigma * txn._latency_z[idx])
         latency *= 1.0 + self._degradation(txn, gateway)
@@ -371,12 +423,17 @@ class Simulator:
             charged = 0
             net = 0
 
+        reason = None
+        if not success:
+            reason = choose_reason(txn._reason_u, *self._severities(txn, gateway))
+
         return Outcome(
             gateway=gateway,
             success=bool(success),
             latency_ms=float(latency),
             fee_paise=int(charged),
             net_revenue_paise=int(net),
+            failure_reason=reason,
         )
 
 

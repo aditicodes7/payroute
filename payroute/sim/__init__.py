@@ -15,6 +15,7 @@ from payroute.sim.config import (
     LatencyConfig,
     SimulatorConfig,
 )
+from payroute.sim.failures import FAILURE_REASONS, choose_reason
 from payroute.sim.incidents import (
     GatewayIncident,
     IssuerIncident,
@@ -31,6 +32,8 @@ __all__ = [
     "GatewayConfig",
     "LatencyConfig",
     "SimulatorConfig",
+    "FAILURE_REASONS",
+    "choose_reason",
     "GatewayIncident",
     "IssuerIncident",
     "sample_gateway_incidents",

@@ -127,6 +127,7 @@ class DecisionRecord:
                 "latency_ms": self.outcome.latency_ms,
                 "fee_paise": self.outcome.fee_paise,
                 "net_revenue_paise": self.outcome.net_revenue_paise,
+                "failure_reason": self.outcome.failure_reason,
             },
         }
 
