@@ -1181,3 +1181,76 @@ Why:          The predicted failure for this rung is the retry state
               tabular rather than reaching for a neural Q-function:
               coverage can be proved.
 Rung:         R7
+
+### Finding: a one-line R1 baseline earns more than every learned policy   2026-10-05 — final
+
+Decision:     Lead the final table with this rather than bury it.
+Alternatives: Leading with the success-rate column, where the learned
+              policies do win.
+Why:          Across 100,000 identical transactions with incidents:
+
+                policy                success   net rev/1k   vs RR
+                round_robin            89.16%    1,825,553       —
+                always_cheapest        87.57%    2,075,865 +250,312
+                historically_best      91.26%    1,544,280 -281,272
+                best_per_segment       93.06%    1,763,383  -62,169
+                linucb (R2)            92.03%    1,863,768  +38,216
+                adaptive_linucb (R4)   93.07%    1,852,877  +27,324
+                constrained_linucb(R5) 88.52%    1,875,051  +49,498
+
+              always_cheapest is a four-line rule with no model, no
+              exploration and no state. It has the WORST success rate of
+              any policy measured and earns 200,814 paise per 1,000 more
+              than our best learned policy. Five rungs of machinery are
+              beaten on the headline objective by "pick the cheapest".
+              The cause is the one flagged at R1 and measured at R5: this
+              world's fee spread is 44% while its success spread is at
+              most 13%, so net revenue is fee-dominated and the optimum
+              is close to a lookup. That was predicted, deferred, and has
+              now arrived exactly as described.
+              The learned policies are not useless — adaptive_linucb
+              leads on success rate (+3.9 points over round robin) and
+              constrained_linucb is the only policy inside the 420ms p95
+              budget at 365ms, where always_cheapest sits at 424ms. No
+              policy wins on all three axes. But "our bandit loses to a
+              fee lookup on revenue" is the result, and a project whose
+              entire premise is not fooling yourself has to say so first.
+Rung:         final
+
+### Finding: the revenue-optimal retry rate is far below the recovery-optimal one   2026-10-05 — R7
+
+Decision:     Report that the learned retry policy RECOVERS LESS than
+              fixed-retry-once while earning more, and flag that the
+              result is sensitive to a cost parameter we chose without
+              justification.
+Alternatives: Reporting the recovered rate alone, where the learned
+              policy looks clearly worse; or tuning retry_cost_paise
+              until the learner retried more.
+Why:          n = 60,000, incidents on:
+                policy             success  recovered  cost/1k   net/1k
+                never_retry         90.40%     0.00%         0 1,924,971
+                fixed_retry_once    93.19%     2.44%    48,790 1,924,601
+                always_retry        93.47%     4.28%    89,530 1,859,699
+                learned (Q)         91.20%     0.63%     7,510 1,952,396
+              The learner earns the most and recovers the least. Reading
+              its table explains why: it retries only card transactions
+              on gateway_timeout. A UPI transaction at the 35,000-paise
+              median yields about 385 paise of margin, and a retry costs
+              600 — so retrying a small transaction is unprofitable at
+              ANY success probability, whatever the failure reason. The
+              learner found that; it is correct arithmetic.
+              It also learned the two calls the rung was built to test:
+              give_up on insufficient_funds (the money is not there) and
+              give_up on issuer_down (a different gateway reaches the
+              same dead bank).
+              THE CAVEAT, stated because it matters: retry_cost_paise =
+              600 was chosen without justification. In reality a retry
+              costs almost nothing operationally and the true cost is
+              customer abandonment, which is modelled separately. The
+              near-degenerate learned policy is therefore partly an
+              artifact of a parameter we invented. A sensitivity sweep
+              over the retry cost is the honest follow-up and is NOT
+              done; until it is, this result should be read as "the
+              learner optimises the objective it was given", not as "do
+              not retry small transactions".
+Rung:         R7

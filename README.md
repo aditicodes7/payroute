@@ -85,7 +85,7 @@ Propensity logging begins at R1 and is enforced by tests from R2 onward.
 | **R4** | Time-decayed per-terminal features; time-to-react | ✅ complete — 23 tests |
 | **R5** | Constrained selection under a p95 latency budget | ✅ complete — 26 tests |
 | **R6** | FastAPI + Redis + Kafka + Postgres service | ⚠️ complete against fakes — 20 tests, 4 skipped |
-| R7 | Tabular Q-learner for retries | not started |
+| **R7** | Tabular Q-learner for retries | ✅ complete — 29 tests |
 
 ## R0 results
 
@@ -262,6 +262,85 @@ of 60,000 records*. That is not high variance that more data would fix. The log
 contains no information about the actions the target would have taken
 differently, so the value is not identified and any number returned would be
 invented.
+
+## The measurement table
+
+100,000 identical transactions, incidents on, every policy paired against
+round-robin.
+
+| rung | policy | success | net rev / 1k | vs round-robin | p95 |
+|---|---|---|---|---|---|
+| R1 | round_robin | 89.16% | 1,825,553 | — | 594ms |
+| R1 | uniform_random | 89.31% | 1,823,684 | −1,869 | 590ms |
+| R1 | **always_cheapest** | **87.57%** | **2,075,865** | **+250,312** | 424ms |
+| R1 | historically_best | 91.26% | 1,544,280 | −281,272 | 810ms |
+| R1 | best_per_segment | 93.06% | 1,763,383 | −62,169 | 706ms |
+| R2 | linucb | 92.03% | 1,863,768 | +38,216 | 607ms |
+| R4 | **adaptive_linucb** | **93.07%** | 1,852,877 | +27,324 | 635ms |
+| R5 | constrained_linucb | 88.52% | 1,875,051 | +49,498 | **365ms** |
+
+### The headline is that we lost
+
+**`always_cheapest` is a four-line rule with no model, no exploration and no
+state. It has the worst success rate of anything measured, and it earns 200,814
+paise per 1,000 transactions more than our best learned policy.** Five rungs of
+machinery are beaten on the headline objective by "pick the cheapest gateway".
+
+The cause was flagged at R1 and measured at R5: this world's fee spread is 44%
+while its success spread is at most 13%, so net revenue is fee-dominated and the
+optimum sits close to a lookup table. It was predicted, deferred rather than
+tuned away, and arrived exactly as described.
+
+The learned policies are not useless. `adaptive_linucb` leads on success rate at
+93.07%, +3.9 points over round-robin. `constrained_linucb` is the **only** policy
+inside the 420ms p95 budget, at 365ms — `always_cheapest` sits at 424ms and
+misses it. No policy wins on all three axes.
+
+But the project's premise is not fooling yourself, so the first sentence of the
+results has to be the one that costs us something.
+
+Raw data: [`results/final_table.csv`](results/final_table.csv).
+
+## R7 — the retry MDP
+
+A failed attempt changes the state you are in — attempt number, known failure
+reason, remaining sensible options — so the action at attempt 1 determines the
+state at attempt 2. That is an MDP, not a bandit, and Q-learning's bootstrap
+term is the part a bandit does not have.
+
+| policy | success | recovered | retry cost / 1k | net rev / 1k |
+|---|---|---|---|---|
+| never_retry | 90.40% | 0.00% | 0 | 1,924,971 |
+| fixed_retry_once | 93.19% | **2.44%** | 48,790 | 1,924,601 |
+| always_retry | **93.47%** | **4.28%** | 89,530 | 1,859,699 |
+| **learned (Q)** | 91.20% | **0.63%** | 7,510 | **1,952,396** |
+
+**The learned policy earns the most and recovers the least.** Reading its table
+explains why — it retries only *card* transactions on `gateway_timeout`:
+
+| failure reason | upi | card |
+|---|---|---|
+| insufficient_funds | give_up | give_up |
+| invalid_credentials | give_up | give_up |
+| issuer_down | give_up | give_up |
+| **gateway_timeout** | give_up | **retry_different_gateway** (+1,962) |
+| do_not_honour | give_up | give_up |
+| risk_declined | give_up | give_up |
+
+A UPI transaction at the 35,000-paise median yields about 385 paise of margin and
+a retry costs 600, so retrying a small transaction is unprofitable at *any*
+success probability, whatever the reason. The learner found that. It also made
+the two calls the rung was built to test: give up on `insufficient_funds`
+(the money isn't there) and on `issuer_down` (a different gateway reaches the
+same dead bank).
+
+**The caveat, because it matters:** `retry_cost_paise = 600` was chosen without
+justification. In reality a retry costs almost nothing operationally and the real
+cost is customer abandonment, which is modelled separately. The near-degenerate
+learned policy is therefore partly an artifact of a parameter we invented. A
+sensitivity sweep over the retry cost is the honest follow-up and **is not done**.
+Until it is, read this as "the learner optimises the objective it was given", not
+as "do not retry small transactions".
 
 ## R4 — time-decayed health features
 
@@ -490,13 +569,15 @@ Raw data: [`results/r3_ope.csv`](results/r3_ope.csv).
 python3 -m venv .venv
 ./.venv/bin/pip install -e . pytest matplotlib
 
-./.venv/bin/python -m pytest -q                        # 238 tests, 4 skipped (need Docker)
+./.venv/bin/python -m pytest -q                        # 267 tests, 4 skipped (need Docker)
 ./.venv/bin/python experiments/r0_simulator_profile.py # simulator charts
 ./.venv/bin/python experiments/r1_baselines.py         # baseline table
 ./.venv/bin/python experiments/r2_linucb.py            # LinUCB + regret curve
 ./.venv/bin/python experiments/r3_ope.py               # estimator comparison
 ./.venv/bin/python experiments/r4_time_to_react.py     # half-life sweep
 ./.venv/bin/python experiments/r5_constrained.py       # constrained selection
+./.venv/bin/python experiments/r7_retry.py             # retry policies
+./.venv/bin/python experiments/final_table.py          # the table across all rungs
 ```
 
 ## Layout
