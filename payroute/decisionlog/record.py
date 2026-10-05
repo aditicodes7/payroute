@@ -52,6 +52,11 @@ class DecisionRecord:
     outcome: Outcome | None = None
     constraint_status: str | None = None
     predicted_p95_ms: float | None = None
+    # R6: "redis" when the health features came from the live state store,
+    # "fallback" when the store was unavailable and priors were used. Without
+    # it, decisions made blind are indistinguishable from informed ones and R3
+    # silently pools two populations.
+    health_source: str | None = None
 
     def __post_init__(self) -> None:
         # Range first: zero is as invalid as negative. An action taken with
@@ -113,6 +118,7 @@ class DecisionRecord:
             "policy_version": self.policy_version,
             "constraint_status": self.constraint_status,
             "predicted_p95_ms": self.predicted_p95_ms,
+            "health_source": self.health_source,
             "outcome": None
             if self.outcome is None
             else {
@@ -142,5 +148,6 @@ class DecisionRecord:
             policy_version=data["policy_version"],
             constraint_status=data.get("constraint_status"),
             predicted_p95_ms=data.get("predicted_p95_ms"),
+            health_source=data.get("health_source"),
             outcome=None if outcome is None else Outcome(**outcome),
         )

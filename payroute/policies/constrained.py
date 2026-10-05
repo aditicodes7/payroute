@@ -169,8 +169,7 @@ class ConstrainedLinUCB(AdaptiveLinUCB):
             probs[gateway] = share + (1.0 - self.epsilon if gateway == greedy else 0.0)
         return probs
 
-    def decide(self, txn: Transaction) -> Decision:
-        context = self.context_for(txn)
+    def decide_from_context(self, context: Mapping) -> Decision:
         probs = self.action_probs(context)
         candidates = [g for g, p in probs.items() if p > 0.0]
 
@@ -186,6 +185,9 @@ class ConstrainedLinUCB(AdaptiveLinUCB):
             constraint_status=self.constraint_status(context),
             predicted_p95_ms=context[f"p95_{chosen}"],
         )
+
+    def decide(self, txn: Transaction) -> Decision:
+        return self.decide_from_context(self.context_for(txn))
 
     # -- feedback ----------------------------------------------------------
 

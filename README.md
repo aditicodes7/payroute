@@ -84,7 +84,7 @@ Propensity logging begins at R1 and is enforced by tests from R2 onward.
 | **R3** | DM / IPS / SNIPS / DR / clipped-IPS vs ground truth | ✅ complete — 31 tests |
 | **R4** | Time-decayed per-terminal features; time-to-react | ✅ complete — 23 tests |
 | **R5** | Constrained selection under a p95 latency budget | ✅ complete — 26 tests |
-| R6 | FastAPI + Redis + Kafka + Postgres service | not started |
+| **R6** | FastAPI + Redis + Kafka + Postgres service | ⚠️ complete against fakes — 20 tests, 4 skipped |
 | R7 | Tabular Q-learner for retries | not started |
 
 ## R0 results
@@ -368,6 +368,78 @@ retuning the world after four rungs of results.
 
 Raw data: [`results/r5_fee_spread.csv`](results/r5_fee_spread.csv).
 
+## R6 — the decision service
+
+```
+POST /decide → {decision_id, gateway, propensity, action_probs,
+                constraint_status, health_source}
+```
+
+The ordering inside the handler is the design: read state, decide, **log**, then
+answer. A routing decision that reaches the caller without its propensity
+recorded is the one thing this project forbids, and it fails invisibly — the
+payment succeeds, nobody notices, and R3 finds a hole months later. So when the
+sink is unavailable the endpoint returns **503 and logs nothing**, rather than a
+cheerful 200 and a gap in the dataset.
+
+A bounded write-ahead buffer sits in front of the sink, so a one-second broker
+election is absorbed rather than becoming an outage. When the buffer fills, the
+service stops routing and says so. That is an arguable tradeoff — a payments
+company might prefer to keep routing and lose the log — and the point is that
+it is chosen and tunable rather than defaulted into.
+
+### Killing the state store
+
+| | behaviour |
+|---|---|
+| Redis available | decision served, `health_source: "redis"` |
+| Redis unavailable | **decision still served** from priors, `health_source: "fallback"` |
+| Redis flapping | no crash; the source field flips per request |
+
+The acceptance criterion was "doesn't crash, doesn't silently guess." The second
+clause is the whole design: a decision made without health data is a different
+kind of decision, and if it is indistinguishable in the log from an informed
+one then R3 pools two populations and every estimate inherits the
+contamination.
+
+### Latency — measured against fakes, and that matters
+
+```
+n = 3,000     p50 1.01ms     p95 1.04ms     p99 1.29ms     max 2.04ms
+```
+
+**This environment has no Docker, Colima or Podman.** The Redis, Kafka and
+Postgres adapters are written against the real client APIs and are **not
+exercised by any passing test**. The figures above measure our own
+serialisation, featurisation and scoring — about 1ms of Python — with no Redis
+round trip, no broker acknowledgement and no network.
+
+That number is still worth regressing on: it catches an N+1 state read (a test
+asserts exactly one read per decision) or a scoring regression. It is **not** a
+deployment p99, and presenting it as one would be the most straightforwardly
+dishonest thing in this project. A realistic deployment would add a Redis
+round trip and a produce acknowledgement on top. The container-based suite is
+written and skipped in [`tests/r6/test_integration.py`](tests/r6/test_integration.py),
+runnable behind `PAYROUTE_INTEGRATION=1`.
+
+### The two-stores problem
+
+Redis health and the Postgres decision log are both projections of the same
+ordered Kafka stream, each with its own offset. They can be *behind* one
+another; they cannot be *inconsistent*, because they replay identical events in
+identical order — so divergence becomes lag, which is a number you can watch.
+[`reconcile.py`](payroute/service/reconcile.py) recomputes health from the log
+and names any gateway that has drifted past a threshold.
+
+And the deeper defence was already built: R1 decided the decision record stores
+the context **as the policy saw it**, copied. Reproducing a decision therefore
+never requires Redis and Postgres to agree about anything. That decision was
+made for R4's benefit and is what makes R6's skew non-fatal.
+
+The schema declares `propensity DOUBLE PRECISION NOT NULL CHECK (propensity > 0
+AND propensity <= 1)` — the invariant stated at the lowest layer that can
+enforce it, covering the paths that do not go through our Python.
+
 ---
 
 ## When this OPE result should NOT be trusted
@@ -418,7 +490,7 @@ Raw data: [`results/r3_ope.csv`](results/r3_ope.csv).
 python3 -m venv .venv
 ./.venv/bin/pip install -e . pytest matplotlib
 
-./.venv/bin/python -m pytest -q                        # 218 tests
+./.venv/bin/python -m pytest -q                        # 238 tests, 4 skipped (need Docker)
 ./.venv/bin/python experiments/r0_simulator_profile.py # simulator charts
 ./.venv/bin/python experiments/r1_baselines.py         # baseline table
 ./.venv/bin/python experiments/r2_linucb.py            # LinUCB + regret curve

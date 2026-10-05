@@ -120,16 +120,23 @@ class LinUCB:
         greedy = self.greedy_action(context)
         return {name: share + (1.0 - self.epsilon if name == greedy else 0.0) for name in self.gateways}
 
-    def decide(self, txn: Transaction) -> Decision:
-        context = self.context_for(txn)
-        probs = self.action_probs(context)
+    def decide_from_context(self, context: Mapping) -> Decision:
+        """Select from a context the caller assembled.
 
+        R6's service reads health from Redis rather than from an in-process
+        store, so it builds the context itself and calls this. Keeping
+        selection independent of where the state came from is what lets the
+        same policy object serve offline runs and HTTP requests unchanged.
+        """
+        probs = self.action_probs(context)
         if self.epsilon > 0.0 and self._rng.random() < self.epsilon:
             chosen = self.gateways[int(self._rng.integers(len(self.gateways)))]
         else:
             chosen = max(probs, key=lambda n: probs[n])
-
         return Decision(chosen, probs, probs[chosen])
+
+    def decide(self, txn: Transaction) -> Decision:
+        return self.decide_from_context(self.context_for(txn))
 
     # -- learning ----------------------------------------------------------
 
