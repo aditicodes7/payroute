@@ -1081,3 +1081,103 @@ Why:          The dataclass refuses to construct a record without a
               invariant is worth stating at the lowest layer that can
               enforce it.
 Rung:         R6
+
+### Retries are a Markov decision process, not another bandit   2026-10-05 — R7
+
+Decision:     Model retries with a tabular Q-learner over
+              (attempt, method, last_failure_reason), not with another
+              contextual bandit.
+Alternatives: Treating each retry attempt as an independent bandit
+              decision with the attempt number as a context feature.
+Why:          A bandit's action does not change the next context — that
+              is what made R2 tractable. A failed attempt DOES change the
+              state: the attempt number rises, the failure reason is now
+              known, the sensible options have narrowed and the customer
+              is closer to abandoning. So the action at attempt 1
+              determines the state at attempt 2, and the consequence is
+              that a greedy per-attempt choice is not optimal: retrying
+              somewhere with a 60% chance now can be worse than giving up
+              if it burns the attempt budget. Q-learning's bootstrap term,
+              max over the next state's actions, is exactly the quantity a
+              bandit does not have.
+Rung:         R7
+
+### Failure reasons added to R0 as a provably inert change   2026-10-05 — R7
+
+Decision:     Add six failure reasons to the simulator, drawn from their
+              own RNG stream conditional on a failure that has already
+              been decided. Prove the addition perturbs nothing with
+              fingerprint tests whose hashes were captured BEFORE the
+              change.
+Alternatives: Inferring a reason after the fact from the incident state,
+              or skipping reasons and using a coarser state.
+Why:          The reasons are the substance of this rung, not decoration:
+              `issuer_down` and `gateway_timeout` both look like a
+              timeout and call for opposite behaviour, because a
+              different gateway routes around a dead gateway but reaches
+              the same dead bank. Without them the retry policy has
+              nothing to learn.
+              Drawing from a new spawned stream leaves the context,
+              outcome and drift streams byte-identical, so no number in
+              R0 through R6 moves. That claim is worth proving rather
+              than asserting, so the success outcomes of 20,000
+              transactions across two seeds are hashed and pinned. If a
+              future change shifts a stream, those tests fail and name
+              the consequence.
+Rung:         R7 (touches R0)
+
+### A retry is a fresh draw, not a replay   2026-10-05 — R7
+
+Decision:     Each attempt beyond the first uses its own pre-drawn
+              uniform, stored on the transaction. Attempt 1 is unchanged.
+Alternatives: Re-resolving with the same common random number.
+Why:          Common random numbers are what make counterfactuals
+              coherent at R0 and R3 — but they also mean re-resolving a
+              transaction returns the identical outcome, so a retry on
+              the same gateway would be a replay and the whole rung would
+              be empty. Per-attempt draws fix that while leaving attempt
+              1 byte-identical, which is what keeps the fingerprint
+              intact.
+Rung:         R7
+
+### Actions are whether to retry, not where   2026-10-05 — R7
+
+Decision:     Actions are {give_up, retry_same_gateway,
+              retry_different_gateway}. Which gateway "different" means
+              is delegated to R5's constrained policy over the remaining
+              set. Gamma is 1.0, episodes cap at three attempts.
+Alternatives: Making the action space the full gateway set at each
+              attempt, so the Q-learner chooses where as well as whether.
+Why:          Three actions keeps the table at 54 states x 3, small
+              enough to enumerate, print and defend. Folding the gateway
+              choice in would multiply the state-action space and
+              duplicate work R2 through R5 already do better with
+              context the tabular model cannot see.
+              Gamma 1.0 because the horizon is three attempts: there is
+              no infinite sum to tame, and undiscounted episodic return
+              IS the quantity we care about — total revenue from this
+              transaction.
+Rung:         R7
+
+### Train/serve parity is enforced by enumeration   2026-10-05 — R7
+
+Decision:     One `build_state` function used by training and serving; an
+              unknown failure reason or method raises rather than
+              defaulting; and `assert_covers` checks the Q-table against
+              the fully enumerated state space at load time.
+Alternatives: A defensive default action for unseen states.
+Why:          The predicted failure for this rung is the retry state
+              being defined slightly differently in training and in the
+              service, so the learned policy never fires. It is the worst
+              kind because it is silent: the lookup misses, every
+              transaction with that reason gets the fallback, and nothing
+              errors. A defensive default is precisely the mechanism that
+              makes it silent.
+              Enumeration is the defence tabular buys. With 54 states
+              every one can be checked before serving a single request,
+              so a state the server can construct but the trainer never
+              visited is a startup failure instead of a quiet
+              degradation. That is a concrete argument for starting
+              tabular rather than reaching for a neural Q-function:
+              coverage can be proved.
+Rung:         R7
