@@ -32,6 +32,11 @@ class Decision:
     action: str
     action_probs: Mapping[str, float]
     propensity: float
+    # Set by policies that select under a constraint (R5). "satisfied" or
+    # "infeasible" — never absent when a constraint was in force, so that a
+    # violation cannot be silently relaxed.
+    constraint_status: str | None = None
+    predicted_p95_ms: float | None = None
 
 
 @dataclass(frozen=True)
@@ -45,6 +50,8 @@ class DecisionRecord:
     policy_id: str
     policy_version: str
     outcome: Outcome | None = None
+    constraint_status: str | None = None
+    predicted_p95_ms: float | None = None
 
     def __post_init__(self) -> None:
         # Range first: zero is as invalid as negative. An action taken with
@@ -104,6 +111,8 @@ class DecisionRecord:
             "action_probs": dict(self.action_probs),
             "policy_id": self.policy_id,
             "policy_version": self.policy_version,
+            "constraint_status": self.constraint_status,
+            "predicted_p95_ms": self.predicted_p95_ms,
             "outcome": None
             if self.outcome is None
             else {
@@ -131,5 +140,7 @@ class DecisionRecord:
             action_probs=data["action_probs"],
             policy_id=data["policy_id"],
             policy_version=data["policy_version"],
+            constraint_status=data.get("constraint_status"),
+            predicted_p95_ms=data.get("predicted_p95_ms"),
             outcome=None if outcome is None else Outcome(**outcome),
         )

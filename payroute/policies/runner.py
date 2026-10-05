@@ -62,6 +62,8 @@ def run_policy(sim: Simulator, policy, n: int, reward_fn=default_reward) -> Deci
                 policy_id=policy.policy_id,
                 policy_version=policy.policy_version,
                 outcome=outcome,
+                constraint_status=decision.constraint_status,
+                predicted_p95_ms=decision.predicted_p95_ms,
             )
         )
         # Policies that learn get their feedback here. Baselines have no

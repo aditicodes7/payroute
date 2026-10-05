@@ -55,6 +55,21 @@ def test_an_unseen_gateway_is_given_the_prior_and_stays_usable():
     assert window.p95_at(T0)["beacon"] == pytest.approx(250.0)
 
 
+def test_a_handful_of_samples_is_not_trusted():
+    """The nearest-rank p95 of five samples is their maximum, which sits around
+    the 83rd percentile in expectation — so a sparsely sampled gateway would be
+    handed an optimistic p95 and admitted to the feasible set on the strength
+    of it. Below the minimum, the prior is used instead."""
+    window = _window(prior_p95_ms=250.0)
+    for i in range(5):
+        window.observe("atlas", latency_ms=9_000.0, at=T0 + timedelta(seconds=i))
+    assert window.p95_at(T0 + timedelta(seconds=10))["atlas"] == pytest.approx(250.0)
+
+    for i in range(5, 40):
+        window.observe("atlas", latency_ms=9_000.0, at=T0 + timedelta(seconds=i))
+    assert window.p95_at(T0 + timedelta(seconds=60))["atlas"] == pytest.approx(9_000.0)
+
+
 def test_samples_are_invisible_before_they_are_observed():
     window = _window()
     for i in range(40):

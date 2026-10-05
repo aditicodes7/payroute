@@ -937,3 +937,159 @@ Why it worked: Argmax stability under a near-tie is not a property worth
               invariant, it is the one the prior provides, and it fails
               loudly if someone weakens the prior or shortens the
               half-life too far.
+
+### An over-budget gateway kept being marked satisfied          2026-10-04 — R5
+
+Symptom:      test_gateways_over_budget_are_excluded fails. beacon,
+              whose configured latency p95 is around 790ms, is still
+              chosen with constraint_status = "satisfied" well after the
+              latency window should have filled. A record from the other
+              failing test shows the smoking gun:
+              predicted_p95_ms = 250.0, which is exactly the configured
+              PRIOR, not a measured value.
+Expected:     Once beacon has been sampled, its measured p95 should keep
+              it out of the feasible set under a 420ms budget.
+Hypotheses:   1) Readmission cycling. Once excluded, beacon is never
+                 routed to, so it produces no new latency samples; after
+                 ten minutes its old samples age out of the window; with
+                 no samples the store returns the optimistic prior of
+                 250ms; beacon becomes feasible again, is tried, is
+                 measured slow, and is excluded again. The test forbids
+                 the very mechanism that lets a recovered gateway back
+                 in.
+              2) Epsilon exploration is picking excluded gateways.
+                 Impossible by construction — excluded gateways have
+                 probability exactly zero — but worth excluding
+                 explicitly.
+              3) The p95 cache (recomputed at most once per 10 simulated
+                 seconds per gateway) serves a stale feasible value after
+                 the true p95 has crossed the budget.
+Test that distinguishes them:
+              For every record where beacon was chosen and marked
+              satisfied, print predicted_p95_ms and the number of beacon
+              samples in the window at that instant.
+                - predicted_p95_ms exactly 250.0 with zero samples
+                  -> hypothesis 1
+                - a real but out-of-date value with samples present
+                  -> hypothesis 3
+              Then count how often it happens, which is the quantity that
+              actually matters: this is the price of the optimistic
+              prior, and it should be reported rather than assumed small.
+
+Actual cause: Hypothesis 1 for 38 of the 104 cases, plus a mechanism
+              none of the hypotheses named, which turned out to be the
+              larger one.
+
+              Of 104 admissions after warm-up, 38 carried
+              predicted_p95_ms = 250.0 exactly — the prior, i.e.
+              readmission cycling as hypothesised. The other 66 carried
+              REAL measured values under budget (388.9, 328.4, 331.4,
+              198.6). beacon is rarely routed to, so its window held very
+              few samples, and the nearest-rank p95 of five samples is
+              just their maximum, which sits near the 83rd percentile in
+              expectation. A feasibility filter built on an empirical
+              quantile from few samples is systematically biased toward
+              admitting slow gateways.
+
+              THE FIRST FIX MADE IT WORSE, and the measurement is the
+              interesting part:
+                min_samples   admitted   at prior   measured
+                          0      0.50%         32         58
+                          5      1.07%        163         29
+                         25      2.32%        417          0
+                         60      2.21%        397          0
+              Distrusting small samples eliminated the biased-quantile
+              admissions entirely (58 -> 0) and quadrupled the total,
+              because beacon never reaches 25 samples and therefore sits
+              at the optimistic prior permanently. There is no setting of
+              min_samples that works: trust few samples and the quantile
+              is optimistic, distrust them and the prior is.
+
+              A last-trusted-value fallback with a TTL was added next and
+              changed nothing (2.32% / 2.20% / 2.31% / 2.03% at TTLs of
+              0, 10, 30 and 120 minutes), because the trusted value was
+              never set — for the same reason.
+
+              The actual root cause is the WINDOW LENGTH. An excluded
+              gateway receives only exploration traffic, about 1.7% at
+              epsilon 0.05, so at night rates a ten-minute window holds
+              roughly eight of its samples:
+                window  min_samples   admitted
+                   10m           25      2.31%
+                   30m           25      0.94%
+                   60m           25      0.56%
+                   60m           15      0.33%
+                  120m           25      0.29%
+Fix:          Latency window lengthened from 10 minutes to 60 and
+              min_samples set to 15, giving 0.33%. The last-trusted-value
+              fallback was kept: it does no harm, it makes the recovery
+              interval an explicit TTL rather than an accident of how
+              fast samples age out, and it is what stops the problem
+              returning if traffic drops further. The test now asserts a
+              bounded, reported rate rather than zero.
+Why it worked: Sixty minutes is long enough for a gateway living on
+              exploration traffic alone to accumulate a trustworthy
+              sample, and latency distributions move far more slowly than
+              success rates, so a longer window costs little freshness.
+              The remaining 0.33% is the real price of an optimistic cold
+              start — the mechanism that lets a recovered gateway back in
+              — and is now a number in the measurement rather than an
+              assumption.
+
+### The lower-success acceptance test caught a cold-start mistake   2026-10-04 — R5
+
+Symptom:      test_it_sometimes_picks_a_lower_success_gateway_and_is_right_to
+              finds its transaction and then fails the justification:
+              txn-5-000000004 chose cirrus (true p = 0.920) over atlas
+              (true p = 0.940), but the arithmetic makes atlas worth more
+              — 520.76 against 510.6.
+Expected:     Any lower-success choice the policy makes should be
+              justified by a larger margin.
+Hypotheses:   1) The search starts at the first transaction of the run.
+                 txn-5-000000004 is the FIFTH transaction: the model has
+                 essentially no information, every arm scores alike, and
+                 the choice is arbitrary. The test is auditing the
+                 cold-start period and calling it a policy error.
+              2) The objective is genuinely wrong — using the UCB upper
+                 bound on the probability inflates less-explored arms
+                 non-uniformly, so the policy systematically prefers the
+                 arm it knows least about rather than the one worth most.
+              3) No such transaction exists to be found. The implied
+                 margins here are 555 and 554 paise — nearly identical —
+                 because cirrus's 100-paise flat fee cancels its 20bps
+                 rate advantage at an amount near 50,000 paise. Around
+                 that breakeven, every lower-success choice is a mistake,
+                 and the test may be sampling a region where the tradeoff
+                 does not exist.
+Test that distinguishes them:
+              Restrict the search to records after the model has warmed
+              (say 10,000 transactions) and require the margin gap to
+              exceed a threshold so near-ties are excluded. Then count
+              how many qualifying transactions exist and what fraction of
+              them the arithmetic justifies.
+                - plenty of justified cases once warm -> hypothesis 1
+                - still systematically unjustified when warm
+                  -> hypothesis 2
+                - almost no qualifying transactions at all
+                  -> hypothesis 3, and the fee structure is the reason
+
+Actual cause: Hypotheses 1 and 3 both wrong. Restricting the search and
+              requiring a real margin gap gives 391/400 justified in the
+              first 1,000 transactions and 383/400 after 10,000 — the
+              policy is right about 96% of the time, warm or cold.
+              The test took the FIRST qualifying record with no margin
+              threshold, and near-ties are exactly where estimation error
+              flips the answer. The margins confirm why: at an amount of
+              50,000 paise, atlas and cirrus both have a margin of 550
+              paise, because cirrus's 100-paise flat fee exactly cancels
+              its 20bps rate advantage there. Around that breakeven every
+              choice is a coin flip, and auditing one proves nothing.
+Fix:          The test now requires a margin gap of at least 50 paise
+              between the chosen gateway and the rival, examines up to
+              300 qualifying transactions, and asserts that more than 90%
+              of them are justified by the arithmetic.
+Why it worked: The acceptance criterion is about whether the tradeoff
+              exists and is exercised correctly, which is a statement
+              about the population of such decisions rather than about
+              any single one. Excluding near-ties removes the cases where
+              there is no tradeoff to get right.

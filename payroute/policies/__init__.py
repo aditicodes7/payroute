@@ -7,6 +7,7 @@ tests/r1/test_propensity_invariant.py covers them automatically.
 
 from payroute.decisionlog import Decision
 from payroute.policies.adaptive import AdaptiveLinUCB, DiscountedLinUCB
+from payroute.policies.constrained import ConstrainedLinUCB
 from payroute.policies.linucb import LinUCB
 from payroute.policies.baselines import (
     AlwaysCheapest,
@@ -28,4 +29,5 @@ __all__ = [
     "LinUCB",
     "AdaptiveLinUCB",
     "DiscountedLinUCB",
+    "ConstrainedLinUCB",
 ]
