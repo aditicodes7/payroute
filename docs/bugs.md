@@ -1093,3 +1093,37 @@ Why it worked: The acceptance criterion is about whether the tradeoff
               about the population of such decisions rather than about
               any single one. Excluding near-ties removes the cases where
               there is no tradeoff to get right.
+
+### Every chart was gitignored, so the published README was broken   2026-10-09 — delivery
+
+Symptom:      After pushing to GitHub, the README's eight image links all
+              resolved to nothing. `git ls-files results/` returned only
+              `.gitkeep` — none of the PNGs or CSVs had ever been
+              committed, across 22 commits.
+Expected:     The charts are the artifacts the project exists to produce
+              and the README links to them directly.
+Hypotheses:   1) `.gitignore` excludes `results/*` with only `.gitkeep`
+                 re-admitted. Written at R0 on the reasoning that
+                 generated output does not belong in version control,
+                 which is normally right and was wrong here.
+              2) The files were added but never committed.
+              3) They exceed a size limit and were silently dropped.
+Test that distinguishes them:
+              `git check-ignore -v results/r0_gateway_outage.png` names
+              the rule and line if it is hypothesis 1; `git status` would
+              show them as untracked-but-not-ignored for 2; `du -h` rules
+              out 3 (the largest is 250KB).
+Actual cause: Hypothesis 1, line 5 of .gitignore. The rule was a sensible
+              default applied without checking what depended on it — the
+              README had been referencing those paths since R0 and
+              nothing ever verified the links resolved.
+Fix:          .gitignore now excludes only `results/*.log`, with a
+              comment explaining why the artifacts are tracked: they are
+              regenerable, but a reader should not have to run anything
+              to see the result.
+Why it worked: The files are 1.3MB in total, which is nothing for git.
+              The broader lesson is the one this project keeps relearning
+              in new costumes: a thing nobody checks is a thing nobody
+              knows is broken. Twenty-two commits and a full read-through
+              of the README never caught it, because the README was only
+              ever read locally, where the paths resolve.

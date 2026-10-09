@@ -2,5 +2,8 @@
 __pycache__/
 *.pyc
 .pytest_cache/
-results/*
-!results/.gitkeep
+# The charts and tables in results/ are committed on purpose: the README links
+# to them, and they are the artifacts the project exists to produce. They are
+# regenerable from experiments/, but a reader should not have to run anything
+# to see the result.
+results/*.log
